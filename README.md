@@ -7,7 +7,7 @@
 # GEE Python Toolkit
 
 ![In Development](https://img.shields.io/badge/Status-In%20Development-yellow)
-![Languages](https://img.shields.io/badge/Languages-Python%20%7C%20GEE-blue)
+![Languages](https://img.shields.io/badge/Languages-Python%20-blue)
 
 A collection of Python scripts for driving [Google Earth Engine](https://earthengine.google.com/) (GEE) from the **Earth Engine Python API** locally, rather than the JavaScript Code Editor. The scripts preprocess and extract remote sensing and geospatial covariates — digital elevation models, terrain and hydrological indices, soil properties, and multi-sensor spectral time series — and export the results (GeoTIFFs and CSVs) to Google Drive.
 
