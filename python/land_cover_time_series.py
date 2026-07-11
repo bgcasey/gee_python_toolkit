@@ -70,10 +70,6 @@ initialize_ee()
 # USE_TEST_AOI = True to find choke points cheaply.
 report = ComputeReport(
     "land_cover_time_series",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 

@@ -82,10 +82,6 @@ initialize_ee()
 # USE_TEST_AOI = True to find choke points cheaply.
 report = ComputeReport(
     "landsat_time_series_to_poly",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 

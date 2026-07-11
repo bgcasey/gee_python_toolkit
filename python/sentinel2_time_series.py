@@ -79,10 +79,6 @@ initialize_ee()
 # USE_TEST_AOI = True to find choke points cheaply.
 report = ComputeReport(
     "sentinel2_time_series",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 

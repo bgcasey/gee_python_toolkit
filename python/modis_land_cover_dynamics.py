@@ -64,10 +64,6 @@ initialize_ee()
 # USE_TEST_AOI = True to find choke points cheaply.
 report = ComputeReport(
     "modis_land_cover_dynamics",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 

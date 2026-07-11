@@ -57,8 +57,10 @@ class ComputeReport:
         name (str): Report name, used in the output file
             name (e.g., the script name).
         out_dir (str): Directory for the report file.
-            Defaults to 'gee_compute_reports' in the
-            current working directory.
+            Defaults to the repo-root 'gee_compute_reports'
+            directory, resolved from this module's location
+            so it is independent of the working directory
+            VS Code runs a script from.
         enabled (bool): If False, all methods are no-ops
             so calling code needs no conditionals.
     """
@@ -67,8 +69,17 @@ class ComputeReport:
         self.name = name
         self.enabled = enabled
         if out_dir is None:
+            # Repo root is two levels up from this module
+            # (python/utils/compute_report.py), so reports
+            # always land in the project's top-level
+            # gee_compute_reports/ regardless of cwd.
+            repo_root = os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))
+                )
+            )
             out_dir = os.path.join(
-                os.getcwd(), "gee_compute_reports"
+                repo_root, "gee_compute_reports"
             )
         self.out_dir = out_dir
         self._blocks = []
