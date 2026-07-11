@@ -1,6 +1,6 @@
 # ---
 # title:   GEE Utility Functions
-# author:  bgcasey
+# author:  Brendan Casey
 # created: 2026-07-10
 # notes:
 #   Helper functions for running Google Earth Engine from
