@@ -129,6 +129,7 @@ Set `EE_PROJECT` to your own project before running any script. Most scripts als
 | [fabdem.py](python/fabdem.py) | Mosaics the FABDEM DEM, clips to the US + Canada, and exports a GeoTIFF. |
 | [fabdem_twi_alberta.py](python/fabdem_twi_alberta.py) | Computes the Topographic Wetness Index (TWI = ln(α/tanβ)) for Alberta using FABDEM slope and MERIT Hydro upslope area. |
 | [fabdem_tpi_alberta.py](python/fabdem_tpi_alberta.py) | Computes the Topographic Position Index (TPI, Weiss 2001) for Alberta from the FABDEM DEM. |
+| [fabdem_dev_alberta.py](python/fabdem_dev_alberta.py) | Computes DEV (deviation from mean elevation, De Reu et al. 2013) — TPI standardized by local relief — for Alberta from the FABDEM DEM. |
 | [global_geomorphometric_layers.py](python/global_geomorphometric_layers.py) | Loads Geomorpho90m geomorphometric variables, mosaics and clips them, and exports a multiband GeoTIFF for Alberta. |
 | [hydrologically_adjusted_elevation.py](python/hydrologically_adjusted_elevation.py) | Extracts Height Above Nearest Drainage (HAND) from MERIT Hydro and exports it for Alberta. |
 | [nrcan_topographic_indices.py](python/nrcan_topographic_indices.py) | Derives terrain metrics (elevation, slope, aspect, northness, eastness) from the NRCan/CDEM DEM. |
