@@ -11,6 +11,11 @@ gee_compute_reports/*
 python/gee_compute_reports/*
 !python/gee_compute_reports/.gitkeep
 
+# Local AOI test rasters and R check outputs
+0_data/aoi_test_rasters/
+r/output/
+tmp/
+
 *.tif
 *.tiff
 *.csv
