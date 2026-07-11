@@ -11,10 +11,26 @@
 #   - TWI GeoTIFF for Alberta (exported to Google Drive)
 # notes:
 #   This script calculates the Topographic Wetness Index
-#   (TWI) as ln(a / tan(b)) using slope from FABDEM (30 m)
-#   and upslope area from MERIT Hydro. It runs the Earth
-#   Engine Python API directly from VS Code and exports a
-#   GeoTIFF to Google Drive.
+#   (TWI) as ln(a / tan(b)), where a is upslope drainage
+#   area (m^2) and b is slope (radians).
+#
+#   FABDEM is a bare-earth DEM with no flow-accumulation
+#   band, and Earth Engine has no native flow-accumulation
+#   algorithm. This script therefore uses a hybrid: slope
+#   from FABDEM (30 m, forests and buildings removed) and
+#   upslope area from MERIT Hydro 'upa' (~90 m, resampled on
+#   the fly). It exports a GeoTIFF to Google Drive.
+#
+#   Data citations:
+#   Hawker, L., et al. (2022). A 30 m global map of
+#   elevation with forests and buildings removed.
+#   Environmental Research Letters, 17(2), 024016.
+#   doi:10.1088/1748-9326/ac4d4f
+#
+#   Yamazaki, D., et al. (2019). MERIT Hydro: A
+#   high-resolution global hydrography map based on latest
+#   topography datasets. Water Resources Research, 55,
+#   5053-5073. doi:10.1029/2019WR024873
 #
 #   Setup (once):
 #     pip install earthengine-api
@@ -24,6 +40,7 @@
 #   script.
 # ---
 
+import math
 import os
 import sys
 
@@ -34,7 +51,6 @@ import ee
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER
-from utils.calculate_twi import calculate_twi_fabdem
 from utils.compute_report import ComputeReport
 from utils.gee_utils import export_image_to_drive, initialize_ee
 
@@ -91,7 +107,37 @@ else:
 # This section calculates TWI from FABDEM slope and MERIT
 # Hydro upslope area. It produces a single-band TWI image.
 
-twi = calculate_twi_fabdem(aoi)
+# Load FABDEM, mosaic, and set a default projection so
+# terrain algorithms have a fixed 30 m metric scale
+# (EPSG:3402, Alberta 10-TM)
+elevation = (
+    ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
+    .mosaic()
+    .setDefaultProjection("EPSG:3402", None, 30)
+    .clip(aoi)
+)
+
+# Calculate slope from FABDEM elevation
+slope = ee.Terrain.slope(elevation)
+
+# Load upslope area from MERIT Hydro and convert km^2 to m^2
+upslope_area = (
+    ee.Image("MERIT/Hydro/v1_0_1")
+    .select("upa")
+    .clip(aoi)
+    .multiply(1e6)
+    .rename("upslope_area")
+)
+
+# Convert slope from degrees to radians
+slope_rad = slope.multiply(math.pi / 180).rename("slope_rad")
+
+# Floor tan(b) at a small value so flat areas (slope 0) are
+# not masked by division by zero
+tan_b = slope_rad.tan().max(0.001)
+
+# Calculate TWI: ln(a / tan(b))
+twi = upslope_area.divide(tan_b).log().rename("twi")
 
 # 3.1 Check min and max values (optional) ----
 # Also runs when COMPUTE_REPORT is on: Earth Engine is
