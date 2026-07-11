@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Earth Engine / local outputs
+gee_compute_reports/
+*.tif
+*.tiff
+*.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
