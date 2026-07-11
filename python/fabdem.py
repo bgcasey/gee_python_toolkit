@@ -27,6 +27,7 @@
 # ---
 
 import os
+from pickle import TRUE
 import sys
 
 import ee
@@ -42,10 +43,10 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 100  # meters
+EXPORT_SCALE = 30  # meters
 EXPORT_CRS = "EPSG:4326"
-PRINT_STATS = True  # min/max check (slow for large AOIs)
-USE_TEST_AOI = False  # True: small test AOI; False: US+Canada
+PRINT_STATS = False  # min/max check (slow for large AOIs)
+USE_TEST_AOI = True  # True: small test AOI; False: US+Canada
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
 
@@ -59,10 +60,6 @@ initialize_ee()
 # points cheaply before a full US + Canada run.
 report = ComputeReport(
     "fabdem",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 
