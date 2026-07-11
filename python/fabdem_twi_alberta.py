@@ -72,10 +72,6 @@ initialize_ee()
 # cost cheaply before a full-province run.
 report = ComputeReport(
     "fabdem_twi_alberta",
-    out_dir=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "gee_compute_reports",
-    ),
     enabled=COMPUTE_REPORT,
 )
 
