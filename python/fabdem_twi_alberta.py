@@ -58,7 +58,6 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 
 # 1.1 User parameters ----
 EXPORT_SCALE = 30  # meters
-PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -68,9 +67,9 @@ COMPUTE_REPORT = True  # write EECU usage report (txt);
 initialize_ee()
 
 # 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full-province run.
+# Records total EECU-seconds for each export task.
+# Best used with USE_TEST_AOI = True to gauge compute
+# cost cheaply before a full-province run.
 report = ComputeReport(
     "fabdem_twi_alberta",
     out_dir=os.path.join(
@@ -138,21 +137,6 @@ tan_b = slope_rad.tan().max(0.001)
 
 # Calculate TWI: ln(a / tan(b))
 twi = upslope_area.divide(tan_b).log().rename("twi")
-
-# 3.1 Check min and max values (optional) ----
-# Also runs when COMPUTE_REPORT is on: Earth Engine is
-# lazy, so the profiler needs an evaluated computation
-# (getInfo) to measure per-algorithm EECU usage.
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("TWI min/max (reduceRegion)"):
-        stats = twi.reduceRegion(
-            reducer=ee.Reducer.minMax(),
-            geometry=aoi,
-            scale=EXPORT_SCALE,
-            maxPixels=1e13,
-            bestEffort=True,
-        ).getInfo()
-    print("TWI min and max values:", stats)
 
 # 4. Export data ----
 # This section exports the TWI image to Google Drive as a

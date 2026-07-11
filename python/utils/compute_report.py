@@ -103,7 +103,7 @@ class ComputeReport:
         self._blocks.append(f"--- Warning ---\n{message}\n")
 
     @contextmanager
-    def section(self, name):
+    def section(self, name, raise_on_error=True):
         """Profile a block of code and record EECU usage.
 
         Wraps the block in ee.profilePrinting so every
@@ -113,12 +113,20 @@ class ComputeReport:
         Python warnings emitted in the block are captured and
         recorded. If the block raises (e.g., an EEException
         from a getInfo call), the error and traceback are
-        recorded against this section, then re-raised so the
-        script still fails loudly rather than hiding the
-        problem.
+        recorded against this section and echoed to the
+        console.
 
         Args:
             name (str): Section label used in the report.
+            raise_on_error (bool): If True (default), a failure
+                is re-raised after being recorded, so the
+                script still fails loudly. Set False for
+                optional diagnostic blocks (e.g., a min/max
+                preview) whose failure should not abort the
+                run; the error is recorded and execution
+                continues past the block. When False, code
+                after the block must tolerate a result the
+                block never assigned (initialize it first).
         """
         if not self.enabled:
             yield
@@ -144,7 +152,8 @@ class ComputeReport:
                     f"Section '{name}' failed: "
                     f"{type(exc).__name__}: {exc}",
                 )
-                raise
+                if raise_on_error:
+                    raise
             finally:
                 elapsed = time.time() - start
                 profile = buf.getvalue().strip()

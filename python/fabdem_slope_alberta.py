@@ -48,7 +48,6 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 # 1.1 User parameters ----
 EXPORT_SCALE = 30  # meters
 EXPORT_CRS = "EPSG:4326"
-PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -58,9 +57,9 @@ COMPUTE_REPORT = True  # write EECU usage report (txt);
 initialize_ee()
 
 # 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full-province run.
+# Records total EECU-seconds for each export task.
+# Best used with USE_TEST_AOI = True to gauge compute
+# cost cheaply before a full-province run.
 report = ComputeReport(
     "fabdem_slope_alberta",
     out_dir=os.path.join(
@@ -107,21 +106,6 @@ elevation = (
 )
 
 slope = ee.Terrain.slope(elevation).rename("slope")
-
-# 3.1 Check min and max values (optional) ----
-# Also runs when COMPUTE_REPORT is on: Earth Engine is
-# lazy, so the profiler needs an evaluated computation
-# (getInfo) to measure per-algorithm EECU usage.
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("Slope min/max (reduceRegion)"):
-        stats = slope.reduceRegion(
-            reducer=ee.Reducer.minMax(),
-            geometry=aoi,
-            scale=EXPORT_SCALE,
-            maxPixels=1e13,
-            bestEffort=True,
-        ).getInfo()
-    print("Slope min and max values:", stats)
 
 # 4. Export data ----
 # This section exports the slope image to Google Drive as

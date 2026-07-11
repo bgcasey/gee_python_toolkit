@@ -53,7 +53,6 @@ EXPORT_CRS = "EPSG:4326"
 TPI_RADII = [250, 1000, 2000]  # one export per radius
 TPI_WINDOW_SHAPE = "circle"  # "circle" or "square"
 TPI_UNITS = "meters"  # "meters" or "pixels"
-PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -63,9 +62,9 @@ COMPUTE_REPORT = True  # write EECU usage report (txt);
 initialize_ee()
 
 # 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full-province run.
+# Records total EECU-seconds for each export task.
+# Best used with USE_TEST_AOI = True to gauge compute
+# cost cheaply before a full-province run.
 report = ComputeReport(
     "fabdem_tpi_alberta",
     out_dir=os.path.join(
@@ -114,10 +113,10 @@ elevation = (
 
 # 4. Compute and export TPI per focal radius ----
 # For each radius in TPI_RADII, TPI is elevation minus the
-# neighborhood mean elevation, checked for min/max, and
-# exported to Google Drive as its own GeoTIFF. Larger radii
-# use bigger focal kernels and cost proportionally more
-# compute; the per-radius report sections show where.
+# neighborhood mean elevation, exported to Google Drive as
+# its own GeoTIFF. Larger radii use bigger focal kernels and
+# cost proportionally more compute; the per-task batch
+# EECU-seconds in the report show where.
 # Set wait=True on the export to block; otherwise monitor
 # progress at https://code.earthengine.google.com/tasks
 
@@ -141,24 +140,7 @@ for radius in TPI_RADII:
         .rename(f"tpi_{radius}")
     )
 
-    # 4.1 Check min and max values (optional) ----
-    # Also runs when COMPUTE_REPORT is on: Earth Engine is
-    # lazy, so the profiler needs an evaluated computation
-    # (getInfo) to measure per-algorithm EECU usage.
-    if PRINT_STATS or COMPUTE_REPORT:
-        with report.section(
-            f"TPI {radius} m min/max (reduceRegion)"
-        ):
-            stats = tpi.reduceRegion(
-                reducer=ee.Reducer.minMax(),
-                geometry=aoi,
-                scale=EXPORT_SCALE,
-                maxPixels=1e13,
-                bestEffort=True,
-            ).getInfo()
-        print(f"TPI {radius} m min and max values:", stats)
-
-    # 4.2 Export this radius as a GeoTIFF ----
+    # 4.1 Export this radius as a GeoTIFF ----
     task = export_image_to_drive(
         image=tpi,
         description=f"FABDEM_TPI_Alberta_{radius}m",
