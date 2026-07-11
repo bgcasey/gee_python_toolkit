@@ -108,7 +108,7 @@ fabdem = ee.ImageCollection(
     "projects/sat-io/open-datasets/FABDEM"
 )
 elev = fabdem.mosaic().setDefaultProjection(
-    "EPSG:3857", None, 30
+    "EPSG:3402", None, 30
 )
 elev_clipped = elev.clip(aoi)
 
