@@ -6,7 +6,8 @@ __pycache__/
 venv/
 
 # Earth Engine / local outputs
-gee_compute_reports/
+gee_compute_reports/*
+!gee_compute_reports/.gitkeep
 *.tif
 *.tiff
 *.csv
