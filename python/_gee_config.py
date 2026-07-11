@@ -1,6 +1,6 @@
 # ---
 # title:   GEE Configuration
-# author:  bgcasey
+# author:  Brendan Casey
 # created: 2026-07-10
 # notes:
 #   Shared configuration for all GEE Python scripts in
