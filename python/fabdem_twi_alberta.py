@@ -1,6 +1,6 @@
 # ---
 # title:   FABDEM Topographic Wetness Index for Alberta
-# author:  bgcasey
+# author:  Brendan Casey
 # created: 2026-07-10
 # inputs:
 #   - FABDEM ImageCollection
