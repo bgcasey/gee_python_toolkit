@@ -1,6 +1,6 @@
 # ---
 # title:   FABDEM Slope for Alberta
-# author:  bgcasey
+# author:  Brendan Casey
 # created: 2026-07-11
 # inputs:
 #   - FABDEM ImageCollection
