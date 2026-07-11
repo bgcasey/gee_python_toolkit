@@ -1,6 +1,6 @@
 # ---
 # title:   FABDEM TPI for Alberta
-# author:  bgcasey
+# author:  Brendan Casey
 # created: 2026-07-11
 # inputs:
 #   - FABDEM ImageCollection
@@ -12,29 +12,17 @@
 # notes:
 #   This script calculates the Topographic Position Index
 #   (TPI) from the FABDEM bare-earth DEM (30 m, forests and
-#   buildings removed) following Weiss (2001): elevation
-#   minus the mean elevation of a surrounding neighborhood.
-#   The collection is mosaicked, the AOI is defined, and TPI
-#   is computed at each focal radius in TPI_RADII, with one
-#   GeoTIFF exported to Google Drive per radius.
-#
-#   Ported from the JavaScript TPI implementation by Aaron
-#   Zuspan (github.com/aazuspan/geeTools, TPI.js).
-#
-#   The neighborhood radius is set in meters, so the DEM is
-#   pinned to a metric projection (EPSG:3402, Alberta 10-TM)
-#   before the focal mean; a distorted CRS such as
-#   Web Mercator would inflate the radius by ~1.7x at this
-#   latitude.
+#   buildings removed): elevation minus the mean elevation of
+#   a surrounding neighborhood. The collection is mosaicked,
+#   the AOI is defined, and TPI is computed at each focal
+#   radius in TPI_RADII, with one GeoTIFF exported to Google
+#   Drive per radius.
 #
 #   Data citations:
 #   Hawker, L., et al. (2022). A 30 m global map of
 #   elevation with forests and buildings removed.
 #   Environmental Research Letters, 17(2), 024016.
 #   doi:10.1088/1748-9326/ac4d4f
-#
-#   Weiss, A. (2001). Topographic position and landforms
-#   analysis. Poster, ESRI User Conference, San Diego, CA.
 #
 #   Setup (once):
 #     pip install earthengine-api
@@ -135,14 +123,14 @@ elevation = (
 
 tasks = []
 for radius in TPI_RADII:
-    # TPI: elevation minus neighborhood mean elevation.
-    # round().int() stores TPI as integer meters,
-    # following Weiss (2001). Rounding lets the GeoTIFF
-    # be written as a compact integer type instead of
+    # TPI: elevation minus neighborhood mean
+    # elevation. round().int() stores TPI as
+    # integer meters. Rounding lets the GeoTIFF be
+    # written as a compact integer type instead of
     # float. round() rounds symmetrically to nearest
-    # (correct for negative valley values); the int()
-    # then just sets the integer storage type. Drop
-    # both for a continuous float raster.
+    # (correct for negative valley values); the
+    # int() then just sets the integer storage
+    # type. Drop both for a continuous float raster.
     tpi = (
         elevation
         .subtract(
