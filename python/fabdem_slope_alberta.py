@@ -102,7 +102,7 @@ else:
 elevation = (
     ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
     .mosaic()
-    .setDefaultProjection("EPSG:3857", None, 30)
+    .setDefaultProjection("EPSG:3402", None, 30)
     .clip(aoi)
 )
 
