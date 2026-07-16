@@ -20,6 +20,9 @@ tmp/
 *.tiff
 *.csv
 
+# Agent instructions (kept local)
+AGENTS.md
+
 # OS / editor
 .DS_Store
 Thumbs.db
