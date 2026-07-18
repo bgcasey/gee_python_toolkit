@@ -56,6 +56,7 @@ def export_image_to_drive(
     file_name_prefix=None,
     scale=30,
     crs="EPSG:4326",
+    crs_transform=None,
     max_pixels=1e13,
     wait=False,
 ):
@@ -68,8 +69,16 @@ def export_image_to_drive(
         folder (str): Google Drive folder name.
         file_name_prefix (str): Output file name. Defaults
             to the task description.
-        scale (float): Pixel resolution in meters.
+        scale (float): Pixel resolution in meters. Ignored
+            when crs_transform is given.
         crs (str): Output coordinate reference system.
+        crs_transform (list): Optional 6-element affine
+            transform [xScale, xShear, xTranslate, yShear,
+            yScale, yTranslate] in the output CRS. When set,
+            pixels are pinned to this exact grid (scale is
+            not used), so outputs align to a reference grid
+            and stack without resampling. region still bounds
+            the export; GEE snaps coverage to the transform.
         max_pixels (float): Maximum allowable pixel count.
         wait (bool): If True, block and print task status
             until the export finishes.
@@ -77,16 +86,23 @@ def export_image_to_drive(
     Returns:
         ee.batch.Task: The started export task.
     """
-    task = ee.batch.Export.image.toDrive(
+    export_kwargs = dict(
         image=image,
         description=description,
         folder=folder,
         fileNamePrefix=file_name_prefix or description,
         region=region,
-        scale=scale,
         crs=crs,
         maxPixels=max_pixels,
     )
+    # crsTransform and scale are mutually exclusive; passing
+    # both makes Earth Engine reject the task.
+    if crs_transform is not None:
+        export_kwargs["crsTransform"] = crs_transform
+    else:
+        export_kwargs["scale"] = scale
+
+    task = ee.batch.Export.image.toDrive(**export_kwargs)
     task.start()
     print(f"Started export task: {description}")
 
