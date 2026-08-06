@@ -1,5 +1,5 @@
 # ---
-# title:   Check small AOI test rasters
+# title:   Check Raster Exports
 # author:  Brendan Casey
 # created: 2026-07-11
 # inputs:
@@ -12,8 +12,9 @@
 #     (counts, % NA, min, max, mean, sd).
 #   - Optional console print of a per-raster reference-grid
 #     fit check (CRS, resolution, lattice alignment, whether
-#     the raster stacks onto the reference grid, and whether
-#     all valid pixels fall inside the AOI boundary).
+#     the raster stacks onto the reference grid, how many
+#     valid pixels fall outside the AOI boundary, and how many
+#     cells are missing (NA) inside it).
 #   - Optional PNG raster plot per raster, coloured with the
 #     MetBrewer "Hiroshige" palette, with the AOI boundary
 #     overlaid, written to out_dir.
@@ -50,9 +51,10 @@
 #   layers. The stack test crops that template to the raster,
 #   fills it with a dummy checkerboard, and crops it to the
 #   AOI boundary, so the alignment proof doubles as a
-#   visualization. It also reports whether any valid pixels
-#   fall outside the AOI boundary (i.e. whether the raster is
-#   cropped to it).
+#   visualization. It also reports how many valid pixels fall
+#   outside the AOI boundary (whether the raster is cropped to
+#   it) and how many cells inside the boundary are NA (data
+#   gaps within Alberta).
 #
 #   Assumptions: rasters are single-band. For multi-band
 #   inputs only the first band is checked (noted at runtime).
@@ -61,8 +63,8 @@
 # 1. Setup ----
 
 ## 1.1 Load packages ----
-# terra   - read rasters, summary stats (version: 1.7-78)
-# ggplot2 - histogram plots (version: 3.5.1)
+# terra     - read rasters, summary stats (version: 1.8.50)
+# ggplot2   - histogram plots (version: 4.0.1)
 # MetBrewer - "Hiroshige" colour palette (version: 0.2.0)
 library(terra) # raster I/O and statistics
 library(ggplot2) # histogram figures
@@ -201,20 +203,29 @@ if (check_grid_fit) {
         # anchored on the full-cell corner, so the template
         # covers every cell with the correct registration.
         ge <- ext(grid_v)
-        xmn <- xmin(fe) + floor((xmin(ge) - xmin(fe)) / cres[1]) * cres[1]
-        xmx <- xmin(fe) + ceiling((xmax(ge) - xmin(fe)) / cres[1]) * cres[1]
-        ymn <- ymin(fe) + floor((ymin(ge) - ymin(fe)) / cres[2]) * cres[2]
-        ymx <- ymin(fe) + ceiling((ymax(ge) - ymin(fe)) / cres[2]) * cres[2]
+        xmn <- xmin(fe) +
+          floor((xmin(ge) - xmin(fe)) / cres[1]) * cres[1]
+        xmx <- xmin(fe) +
+          ceiling((xmax(ge) - xmin(fe)) / cres[1]) * cres[1]
+        ymn <- ymin(fe) +
+          floor((ymin(ge) - ymin(fe)) / cres[2]) * cres[2]
+        ymx <- ymin(fe) +
+          ceiling((ymax(ge) - ymin(fe)) / cres[2]) * cres[2]
         rast(
-          xmin = xmn, xmax = xmx, ymin = ymn, ymax = ymx,
-          resolution = cres, crs = crs(grid_v)
+          xmin = xmn,
+          xmax = xmx,
+          ymin = ymn,
+          ymax = ymx,
+          resolution = cres,
+          crs = crs(grid_v)
         )
       }
     },
     error = function(e) {
       warning(
         "Could not load reference grid; skipping grid-fit ",
-        "check. Reason: ", conditionMessage(e)
+        "check. Reason: ",
+        conditionMessage(e)
       )
       NULL
     }
@@ -232,10 +243,13 @@ if (check_grid_fit) {
     message(
       "Reference grid: ",
       if (is.na(ref_name)) "custom CRS" else ref_name,
-      ", res ", paste(signif(ref_res_xy, 6), collapse = " x "),
+      ", res ",
+      paste(signif(ref_res_xy, 6), collapse = " x "),
       ", lattice origin (",
-      format(ref_anchor[1], nsmall = 2), ", ",
-      format(ref_anchor[2], nsmall = 2), ")"
+      format(ref_anchor[1], nsmall = 2),
+      ", ",
+      format(ref_anchor[2], nsmall = 2),
+      ")"
     )
   }
 }
@@ -264,8 +278,21 @@ if (check_grid_fit || overlay_boundary || plot_grid_stack) {
   }
 }
 
-# Return the AOI in a target object's CRS, projecting only
-# when they differ, so overlays and masks line up.
+#' Return the AOI boundary in a target object's CRS
+#'
+#' Reprojects the loaded AOI boundary (the enclosing-scope
+#' `aoi_vect`) to match a target raster or vector's CRS, but
+#' only when they differ, so plot overlays and masks line up
+#' without a needless reprojection. Returns NULL when no AOI
+#' boundary was loaded.
+#'
+#' @param target A SpatRaster or SpatVector whose CRS the AOI
+#'   should be returned in.
+#' @return A SpatVector in target's CRS, or NULL when
+#'   `aoi_vect` is NULL.
+#'
+#' @examples
+#' # aoi_r <- aoi_in_crs(r) # r is a SpatRaster
 aoi_in_crs <- function(target) {
   if (is.null(aoi_vect)) {
     return(NULL)
@@ -316,8 +343,10 @@ for (raster_path in raster_files) {
   if (check_grid_fit) {
     crs_ok <- terra::same.crs(r, ref_template)
     res_ok <- isTRUE(all.equal(
-      res(r), ref_res_xy,
-      tolerance = grid_fit_tolerance, scale = 1
+      res(r),
+      ref_res_xy,
+      tolerance = grid_fit_tolerance,
+      scale = 1
     ))
     # Distance from the raster's lower-left corner to the
     # nearest reference grid line; aligned rasters sit on the
@@ -360,22 +389,34 @@ for (raster_path in raster_files) {
       stack_msg <- "CRS differs from reference grid"
     }
 
-    # Crop coverage: count valid pixels that fall outside the
-    # AOI boundary. A raster cropped to the AOI has none.
+    # Crop coverage: count valid pixels that fall OUTSIDE the
+    # AOI boundary (a raster cropped to the AOI has none) and NA
+    # pixels INSIDE it (genuine data gaps -- cells within
+    # Alberta that carry no value). rasterize marks the cells
+    # whose centre falls in the AOI, matching mask's pixel rule.
     n_outside <- NA_integer_
     in_boundary <- NA
+    n_na_inside <- NA_integer_
     aoi_r <- aoi_in_crs(r)
     if (!is.null(aoi_r)) {
+      r_vals <- values(r, mat = FALSE)
       outside <- mask(r, aoi_r, inverse = TRUE)
       n_outside <- sum(!is.na(values(outside, mat = FALSE)))
       in_boundary <- n_outside == 0
+
+      inside_cell <- !is.na(values(rasterize(aoi_r, r), mat = FALSE))
+      n_na_inside <- sum(is.na(r_vals) & inside_cell)
     }
 
     message(
-      "  Grid fit: crs ", if (crs_ok) "OK" else "MISMATCH",
-      ", res ", if (res_ok) "OK" else "MISMATCH",
-      ", aligned ", if (align_ok) "OK" else "OFF-GRID",
-      ", stackable ", if (stackable) "YES" else "NO"
+      "  Grid fit: crs ",
+      if (crs_ok) "OK" else "MISMATCH",
+      ", res ",
+      if (res_ok) "OK" else "MISMATCH",
+      ", aligned ",
+      if (align_ok) "OK" else "OFF-GRID",
+      ", stackable ",
+      if (stackable) "YES" else "NO"
     )
     if (!stackable && nzchar(stack_msg)) {
       message("    Stack blocked: ", stack_msg)
@@ -390,6 +431,17 @@ for (raster_path in raster_files) {
         }
       )
     }
+    if (!is.na(n_na_inside)) {
+      message(
+        "  NA inside AOI: ",
+        n_na_inside,
+        if (n_na_inside > 0) {
+          " cell(s) missing within boundary"
+        } else {
+          " (full coverage within boundary)"
+        }
+      )
+    }
 
     grid_fit_list[[layer_name]] <- data.frame(
       raster = layer_name,
@@ -400,7 +452,8 @@ for (raster_path in raster_files) {
       offset_y = off_y,
       stackable = stackable,
       n_outside = n_outside,
-      in_boundary = in_boundary
+      in_boundary = in_boundary,
+      n_na_inside = n_na_inside
     )
   }
 
@@ -652,6 +705,14 @@ if (length(grid_fit_list) > 0) {
       "WARNING: ",
       n_out,
       " raster(s) have valid pixels outside the AOI boundary."
+    )
+  }
+  n_gap <- sum(grid_fit_df$n_na_inside > 0, na.rm = TRUE)
+  if (n_gap > 0) {
+    message(
+      "NOTE: ",
+      n_gap,
+      " raster(s) have NA gaps inside the AOI boundary."
     )
   }
 }
