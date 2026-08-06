@@ -5,9 +5,11 @@
 # inputs:
 #   - FABDEM ImageCollection
 #     (projects/sat-io/open-datasets/FABDEM)
-#   - FAO GAUL province boundaries
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - TRI GeoTIFF for Alberta (exported to Google Drive)
+#   - TRI GeoTIFF for Alberta, aligned to the ABMI 1 km
+#     reference grid (exported to Google Drive)
 # notes:
 #   This script calculates the Terrain Ruggedness Index
 #   (TRI) from the FABDEM bare-earth DEM (30 m, forests and
@@ -21,6 +23,15 @@
 #   difference between a cell and its neighbours; it is high
 #   in rugged terrain and near zero on smooth surfaces, in
 #   the same units as elevation (metres).
+#
+#   TRI is computed at FOCAL_BASE_M (50 m) rather than the
+#   native 30 m so the 1 km aggregation stays under Earth
+#   Engine's per-tile reprojection limit (see
+#   utils.gee_utils.to_reference_grid). The 3x3 window is
+#   therefore ~150 m across; ruggedness is scale-dependent, so
+#   this is a coarser measure than a 30 m TRI. The grid /
+#   boundary / aggregation / export plumbing lives in
+#   utils/gee_utils.py.
 #
 #   Data citations:
 #   Hawker, L., et al. (2022). A 30 m global map of
@@ -52,13 +63,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER
 from utils.compute_report import ComputeReport
-from utils.gee_utils import export_image_to_drive, initialize_ee
+from utils.gee_utils import (
+    define_study_area,
+    export_to_reference_grid,
+    fabdem_elevation,
+    initialize_ee,
+    to_reference_grid,
+)
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 30  # meters
-EXPORT_CRS = "EPSG:4326"
+# FOCAL_BASE_M is the resolution TRI is computed at before
+# aggregating to 1 km (>= ~50 m for a full-province run).
+FOCAL_BASE_M = 50
 TRI_WINDOW_RADIUS = 1  # pixels; 1 = classic 3x3 Riley window
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
@@ -79,41 +97,18 @@ report = ComputeReport(
 )
 
 # 2. Define study area ----
-# This section defines the export geometry. It uses a
-# small test polygon when USE_TEST_AOI is True; otherwise
-# it filters the FAO GAUL provinces for Alberta.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+# aoi is the export / crop boundary; aoi_compute adds a ring
+# (the TRI window reach) so the neighbourhood sums are unbiased
+# at the true AOI edge.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=FOCAL_BASE_M * TRI_WINDOW_RADIUS,
+)
 
 # 3. TRI calculation ----
-# This section mosaics the FABDEM collection, pins it to a
-# metric projection (EPSG:3402, Alberta 10-TM) so the
-# neighbourhood sits on a consistent 30 m grid, clips to the
-# AOI, and derives TRI. It produces a single-band TRI image.
-
-elevation = (
-    ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
-    .mosaic()
-    .setDefaultProjection("EPSG:3402", None, 30)
-    .clip(aoi)
-    .double()
-)
+# FABDEM at the FOCAL_BASE_M base projection, then TRI from the
+# neighbourhood sums of z, z^2, and the valid-pixel count.
+elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
 
 # Unweighted window (normalize=False keeps each weight at 1
 # so the sum reducer returns true sums, not means)
@@ -144,36 +139,37 @@ ssd = (
 )
 tri = ssd.max(0).sqrt().rename("tri")
 
+# Aggregate to the 1 km reference grid (area mean, float32,
+# clipped to Alberta). TRI is continuous metres, so no rounding.
+tri_1km = to_reference_grid(tri, aoi)
+
 # 3.1 Check min and max values (optional) ----
 # Also runs when COMPUTE_REPORT is on: Earth Engine is
 # lazy, so the profiler needs an evaluated computation
 # (getInfo) to measure per-algorithm EECU usage.
 if PRINT_STATS or COMPUTE_REPORT:
     with report.section("TRI min/max (reduceRegion)"):
-        stats = tri.reduceRegion(
+        stats = tri_1km.reduceRegion(
             reducer=ee.Reducer.minMax(),
             geometry=aoi,
-            scale=EXPORT_SCALE,
+            scale=1000,
             maxPixels=1e13,
             bestEffort=True,
         ).getInfo()
     print("TRI min and max values:", stats)
 
 # 4. Export data ----
-# This section exports the TRI image to Google Drive as a
-# GeoTIFF. Set wait=True to block until the task finishes;
-# otherwise monitor progress at
-# https://code.earthengine.google.com/tasks
-
-task = export_image_to_drive(
-    image=tri,
-    description="FABDEM_TRI_Alberta",
-    region=aoi,
+# Export the already-aggregated 1 km TRI on the grid's exact
+# CRS and transform (aggregate=False -- tri_1km is on the grid
+# already). Set wait=True to block; otherwise monitor progress
+# at https://code.earthengine.google.com/tasks
+task = export_to_reference_grid(
+    image=tri_1km,
+    aoi=aoi,
+    description="FABDEM_TRI_Alberta_1km",
     folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_tri_alberta",
-    scale=EXPORT_SCALE,
-    crs=EXPORT_CRS,
-    max_pixels=1e13,
+    file_name_prefix="fabdem_tri_alberta_1km",
+    aggregate=False,
     wait=False,
 )
 

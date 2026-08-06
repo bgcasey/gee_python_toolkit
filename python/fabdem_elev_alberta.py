@@ -1,29 +1,31 @@
 # ---
-# title:   FABDEM Slope for Alberta
+# title:   FABDEM Elevation for Alberta
 # author:  Brendan Casey
-# created: 2026-07-11
+# created: 2026-08-05
 # inputs:
 #   - FABDEM ImageCollection
 #     (projects/sat-io/open-datasets/FABDEM)
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Slope GeoTIFF for Alberta, aligned to the ABMI 1 km
-#     reference grid (exported to Google Drive)
+#   - Mean-elevation GeoTIFF for Alberta, aligned to the ABMI
+#     1 km reference grid (exported to Google Drive)
 # notes:
-#   This script calculates slope (in degrees) from the FABDEM
-#   bare-earth DEM (30 m, forests and buildings removed). The
-#   collection is mosaicked and pinned to a FOCAL_BASE_M metric
-#   projection, slope is computed, then aggregated to the ABMI
-#   1 km reference grid and exported so it stacks with the other
-#   grid layers.
+#   This script produces mean elevation per 1 km cell from the
+#   FABDEM bare-earth DEM (30 m, forests and buildings
+#   removed), as a covariate that stacks with the other ABMI
+#   1 km terrain layers (slope, TPI, DEV, TRI, TWI).
 #
-#   All of the grid / boundary / aggregation / export plumbing
-#   lives in utils/gee_utils.py (define_study_area,
-#   fabdem_elevation, export_to_reference_grid) and the grid
-#   constants in _gee_config.py, so this script only holds the
-#   slope-specific bits. See fabdem_tpi_alberta.py for the same
-#   pattern with a focal calculation.
+#   Elevation is a raw value (no neighborhood operation), so
+#   there is no edge bias and no compute buffer is needed. It
+#   is served at FOCAL_BASE_M from FABDEM's pyramids (an area
+#   mean of the native 30 m), then aggregated to the 1 km grid
+#   by area mean -- i.e. mean elevation per cell. The grid /
+#   boundary / aggregation / export plumbing lives in
+#   utils/gee_utils.py.
+#
+#   For the full-resolution source DEM over a larger extent,
+#   see fabdem.py (US + Canada, native 30 m, not grid-aligned).
 #
 #   Data citation:
 #   Hawker, L., et al. (2022). A 30 m global map of
@@ -42,8 +44,6 @@
 import os
 import sys
 
-import ee
-
 # Make utils importable regardless of the working
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,10 +60,10 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-# FOCAL_BASE_M is the resolution slope is computed at before
-# aggregating to 1 km (>= ~50 m for a full-province run; see
-# to_reference_grid). Slope uses a 3x3 neighborhood, so the
-# compute buffer only needs about one base pixel.
+# FOCAL_BASE_M is the resolution elevation is served at before
+# aggregating to 1 km. Elevation has no neighborhood op, so any
+# base under the reprojection limit works (>= ~50 m for a
+# full-province run); 50 m is the area mean of the native 30 m.
 FOCAL_BASE_M = 50
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
@@ -78,36 +78,35 @@ initialize_ee()
 # Best used with USE_TEST_AOI = True to gauge compute
 # cost cheaply before a full-province run.
 report = ComputeReport(
-    "fabdem_slope_alberta",
+    "fabdem_elev_alberta",
     enabled=COMPUTE_REPORT,
 )
 
 # 2. Define study area ----
-# aoi is the export / crop boundary; aoi_compute adds a one-
-# pixel ring so the 3x3 slope kernel is unbiased at the edge.
+# No neighborhood op, so no compute ring is needed (buffer_m=0
+# makes aoi_compute == aoi).
 aoi, aoi_compute = define_study_area(
     use_test_aoi=USE_TEST_AOI,
-    buffer_m=FOCAL_BASE_M,
+    buffer_m=0,
 )
 
-# 3. Slope calculation ----
-# FABDEM at the FOCAL_BASE_M base projection, then slope in
-# degrees. It produces a single-band slope image.
+# 3. Prepare the DEM ----
+# FABDEM served at the FOCAL_BASE_M base projection (pyramid
+# area mean of the native 30 m) and clipped to the AOI.
 elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
-slope = ee.Terrain.slope(elevation).rename("slope")
 
 # 4. Aggregate to the grid and export ----
-# export_to_reference_grid aggregates slope to the 1 km ABMI
-# grid by area mean and exports it on the grid's exact CRS and
-# transform. round_values stays False -- slope is continuous
-# degrees. Set wait=True to block; otherwise monitor progress
-# at https://code.earthengine.google.com/tasks
+# export_to_reference_grid aggregates elevation to the 1 km
+# ABMI grid by area mean (mean elevation per cell) and exports
+# it on the grid's exact CRS and transform. Set wait=True to
+# block; otherwise monitor progress at
+# https://code.earthengine.google.com/tasks
 task = export_to_reference_grid(
-    image=slope,
+    image=elevation.rename("elevation"),
     aoi=aoi,
-    description="FABDEM_Slope_Alberta_1km",
+    description="FABDEM_Elevation_Alberta_1km",
     folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_slope_alberta_1km",
+    file_name_prefix="fabdem_elevation_alberta_1km",
     wait=False,
 )
 

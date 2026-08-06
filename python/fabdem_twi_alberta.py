@@ -6,9 +6,11 @@
 #   - FABDEM ImageCollection
 #     (projects/sat-io/open-datasets/FABDEM)
 #   - MERIT Hydro upslope area (MERIT/Hydro/v1_0_1)
-#   - FAO GAUL province boundaries
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - TWI GeoTIFF for Alberta (exported to Google Drive)
+#   - TWI GeoTIFF for Alberta, aligned to the ABMI 1 km
+#     reference grid (exported to Google Drive)
 # notes:
 #   This script calculates the Topographic Wetness Index
 #   (TWI) as ln(a / tan(b)), where a is upslope drainage
@@ -17,9 +19,16 @@
 #   FABDEM is a bare-earth DEM with no flow-accumulation
 #   band, and Earth Engine has no native flow-accumulation
 #   algorithm. This script therefore uses a hybrid: slope
-#   from FABDEM (30 m, forests and buildings removed) and
-#   upslope area from MERIT Hydro 'upa' (~90 m, resampled on
-#   the fly). It exports a GeoTIFF to Google Drive.
+#   from FABDEM (computed at FOCAL_BASE_M) and upslope area
+#   from MERIT Hydro 'upa' (~90 m). The result is aggregated
+#   to the ABMI 1 km reference grid and exported so it stacks
+#   with the other grid layers.
+#
+#   Slope is computed at FOCAL_BASE_M (50 m) rather than the
+#   native 30 m so the 1 km aggregation stays under Earth
+#   Engine's per-tile reprojection limit (see
+#   utils.gee_utils.to_reference_grid). The grid / boundary /
+#   aggregation / export plumbing lives in utils/gee_utils.py.
 #
 #   Data citations:
 #   Hawker, L., et al. (2022). A 30 m global map of
@@ -52,12 +61,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER
 from utils.compute_report import ComputeReport
-from utils.gee_utils import export_image_to_drive, initialize_ee
+from utils.gee_utils import (
+    define_study_area,
+    export_to_reference_grid,
+    fabdem_elevation,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 30  # meters
+# FOCAL_BASE_M is the resolution slope is computed at before
+# aggregating to 1 km (>= ~50 m for a full-province run). Slope
+# uses a 3x3 neighborhood, so the compute buffer only needs
+# about one base pixel.
+FOCAL_BASE_M = 50
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -76,50 +94,28 @@ report = ComputeReport(
 )
 
 # 2. Define study area ----
-# This section defines the export geometry. It uses a
-# small test polygon when USE_TEST_AOI is True; otherwise
-# it filters the FAO GAUL provinces for Alberta.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
-
-# 3. TWI calculation ----
-# This section calculates TWI from FABDEM slope and MERIT
-# Hydro upslope area. It produces a single-band TWI image.
-
-# Load FABDEM, mosaic, and set a default projection so
-# terrain algorithms have a fixed 30 m metric scale
-# (EPSG:3402, Alberta 10-TM)
-elevation = (
-    ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
-    .mosaic()
-    .setDefaultProjection("EPSG:3402", None, 30)
-    .clip(aoi)
+# aoi is the export / crop boundary; aoi_compute adds a one-
+# pixel ring so the 3x3 slope kernel is unbiased at the edge.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=FOCAL_BASE_M,
 )
 
-# Calculate slope from FABDEM elevation
+# 3. TWI calculation ----
+# TWI from FABDEM slope and MERIT Hydro upslope area. It
+# produces a single-band TWI image.
+
+# FABDEM at the FOCAL_BASE_M base projection, then slope.
+elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
 slope = ee.Terrain.slope(elevation)
 
-# Load upslope area from MERIT Hydro and convert km^2 to m^2
+# Upslope area from MERIT Hydro, converted km^2 -> m^2. MERIT
+# 'upa' is a stored (pyramided) dataset, so it needs no coarse
+# base; clip to the buffered AOI to match the elevation extent.
 upslope_area = (
     ee.Image("MERIT/Hydro/v1_0_1")
     .select("upa")
-    .clip(aoi)
+    .clip(aoi_compute)
     .multiply(1e6)
     .rename("upslope_area")
 )
@@ -131,24 +127,20 @@ slope_rad = slope.multiply(math.pi / 180).rename("slope_rad")
 # not masked by division by zero
 tan_b = slope_rad.tan().max(0.001)
 
-# Calculate TWI: ln(a / tan(b))
+# Calculate TWI: ln(a / tan(b)). Continuous, so no rounding.
 twi = upslope_area.divide(tan_b).log().rename("twi")
 
-# 4. Export data ----
-# This section exports the TWI image to Google Drive as a
-# GeoTIFF. Set wait=True to block until the task finishes;
-# otherwise monitor progress at
-# https://code.earthengine.google.com/tasks
-
-task = export_image_to_drive(
+# 4. Aggregate to the grid and export ----
+# export_to_reference_grid aggregates TWI to the 1 km ABMI grid
+# by area mean and exports it on the grid's exact CRS and
+# transform. Set wait=True to block; otherwise monitor progress
+# at https://code.earthengine.google.com/tasks
+task = export_to_reference_grid(
     image=twi,
-    description="FABDEM_TWI_Alberta",
-    region=aoi,
+    aoi=aoi,
+    description="FABDEM_TWI_Alberta_1km",
     folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_twi_alberta",
-    scale=EXPORT_SCALE,
-    crs="EPSG:4326",
-    max_pixels=1e13,
+    file_name_prefix="fabdem_twi_alberta_1km",
     wait=False,
 )
 

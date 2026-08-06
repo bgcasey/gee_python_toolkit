@@ -8,31 +8,36 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     PROVINCIAL_BOUNDARY_ASSET) for the full-province crop
 # outputs:
-#   - One 30 m TPI GeoTIFF per focal radius for Alberta,
-#     cropped to the province and exported to Google Drive
-#     (large; Earth Engine shards it into multiple tiles).
-#     Aggregate to the ABMI 1 km reference grid downstream
-#     with r/aggregate_tpi_to_grid.R.
+#   - One 1 km TPI GeoTIFF per focal radius for Alberta,
+#     aligned to the ABMI 1 km reference grid
+#     (exported to Google Drive)
 # notes:
 #   This script calculates the Topographic Position Index
 #   (TPI) from the FABDEM bare-earth DEM (30 m, forests and
 #   buildings removed): elevation minus the mean elevation of
 #   a surrounding neighborhood. The collection is mosaicked,
 #   the AOI is defined, and TPI is computed at each focal
-#   radius in TPI_RADII at the DEM's native 30 m resolution.
+#   radius in TPI_RADII at FOCAL_BASE_M resolution.
 #
-#   The TPI surface is exported at native 30 m (EPSG:3400,
-#   anchored to the ABMI grid origin) and is NOT aggregated
-#   here. Aggregating a computed 30 m layer straight to 1 km
-#   over the whole province exceeds Earth Engine's per-tile
-#   reprojection limit ("Reprojection output too large"):
-#   filling one 1 km output tile forces the 30 m focalMean
-#   over a ~256 km footprint (~8600x8600 px). So the 30 m TPI
-#   is exported as-is and the 30 m -> 1 km area mean, grid
-#   snap, and province crop are done downstream in R
-#   (r/aggregate_tpi_to_grid.R), where there is no such limit.
+#   Each TPI surface is then aggregated to the 1 km ABMI
+#   reference grid by area mean (reduceResolution) and exported
+#   on that grid's exact CRS and affine transform (crsTransform,
+#   not scale), so every output shares identical spatial
+#   properties -- CRS, cell size, and origin -- and stacks
+#   without any further interpolation or alignment.
 #
-#   Reference grid the R step targets:
+#   TPI is computed at FOCAL_BASE_M (50 m) rather than the
+#   native 30 m. Aggregating a computed 30 m layer straight to
+#   1 km over the whole province exceeds Earth Engine's
+#   per-tile reprojection limit ("Reprojection output too
+#   large"): filling one 1 km output tile forces the focal mean
+#   over a ~256 km footprint, which at 30 m is ~8600 px per
+#   side -- over the ~8192 cap. A 50 m base drops it to
+#   ~5200 px. FABDEM is served from its pyramids at 50 m (an
+#   area mean of the 30 m elevation), so for radii >> the base
+#   the coarser base costs almost nothing.
+#
+#   Reference grid:
 #     \\ABMI-DATA2\science\spatial_data\temp\
 #       GRID1SQKM_AB2020.gdb (layer Grid_1KM_revAB2020)
 #     CRS EPSG:3400 (NAD83 / Alberta 10-TM Forest),
@@ -69,24 +74,21 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 # 1. Setup ----
 
 # 1.1 User parameters ----
-# Export grid: the 30 m TPI is exported in the ABMI grid's CRS
-# and anchored to its lattice origin, so the downstream 1 km
-# aggregation lands cleanly on the reference grid.
-# EXPORT_CRS_TRANSFORM is [xScale, xShear, originX, yShear,
-# yScale, originY].
+# Output grid: exports are pinned to the ABMI 1 km reference
+# grid so every raster shares its exact spatial properties and
+# they stack without further processing. GRID_CRS_TRANSFORM is
+# [xScale, xShear, originX, yShear, yScale, originY]; the origin
+# is the grid-aligned top-left corner covering Alberta (west
+# 170616.1822, north 6659532.4311), yScale negative because
+# rows run north -> south.
 GRID_CRS = "EPSG:3400"  # NAD83 / Alberta 10-TM (Forest)
-EXPORT_SCALE = 30  # metres (native FABDEM resolution)
-# TPI is exported at 30 m anchored to the ABMI 1 km grid's
-# top-left lattice node (west 170616.1822, north 6659532.4311)
-# so pixels sit on a fixed, reproducible 30 m lattice. Exact
-# nesting into 1 km cells is not required: the downstream R
-# step aggregates by area-weighted mean, which handles the
-# non-integer 1000/30 ratio. yScale is negative (rows run
-# north -> south).
-EXPORT_CRS_TRANSFORM = [
-    EXPORT_SCALE, 0, 170616.1822,
-    0, -EXPORT_SCALE, 6659532.4311,
-]
+GRID_CRS_TRANSFORM = [1000, 0, 170616.1822, 0, -1000, 6659532.4311]
+# Focal base resolution (metres). # Focal-base pixels averaged into 
+# each 1 km cell TPI is computed at this resolution, not the native 
+# 30 m, so the jump to 1 km stays under Earth Engine's per-tile 
+# reprojection limit. 
+FOCAL_BASE_M = 40
+AGG_MAX_PIXELS = 1024
 # Full-province runs are cropped to this boundary (an Earth
 # Engine table asset). Upload AB2020_provincial_boundary.shp
 # to your EE assets and set the ID here. Only used when
@@ -94,7 +96,7 @@ EXPORT_CRS_TRANSFORM = [
 PROVINCIAL_BOUNDARY_ASSET = (
     "projects/ee-bgcasey-abmi/assets/AB2020_provincial_boundary"
 )
-TPI_RADII = [1000]  # one export per radius
+TPI_RADII = [250]  # one export per radius
 TPI_WINDOW_SHAPE = "circle"  # "circle" or "square"
 TPI_UNITS = "meters"  # "meters" or "pixels"
 # Compute buffer (metres). The DEM is clipped to the AOI grown
@@ -103,9 +105,11 @@ TPI_UNITS = "meters"  # "meters" or "pixels"
 # masked pixels (which would bias TPI inward). The ring is
 # discarded when the output is clipped back to the AOI, and
 # compute stays bounded to AOI + ring rather than the whole
-# DEM. It must be >= the largest focal reach; native pixels
-# are 30 m, so "pixels" radii are converted to metres.
-COMPUTE_BUFFER_M = max(TPI_RADII) * (30 if TPI_UNITS == "pixels" else 1)
+# DEM. It must be >= the largest focal reach; focal-base pixels
+# are FOCAL_BASE_M, so "pixels" radii are converted to metres.
+COMPUTE_BUFFER_M = max(TPI_RADII) * (
+    FOCAL_BASE_M if TPI_UNITS == "pixels" else 1
+)
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -149,29 +153,31 @@ else:
 aoi_compute = aoi.buffer(COMPUTE_BUFFER_M, 100)
 
 # 3. Prepare the DEM ----
-# This section mosaics the FABDEM collection, pins it to the
-# reference grid's metric projection (EPSG:3400, Alberta
-# 10-TM) at the native 30 m resolution so the focal radius
-# maps to real ground distance and the later 30 m -> 1 km
-# aggregation stays within one CRS. It clips to the buffered
-# AOI (aoi_compute) so the focal mean has real elevation on
-# all sides of the true AOI edge. The same elevation image
-# feeds every focal radius below.
+# This section mosaics the FABDEM collection and pins it to the
+# reference grid's metric projection (EPSG:3400, Alberta 10-TM)
+# at FOCAL_BASE_M so the focal radius maps to real ground
+# distance and the aggregation stays within one CRS. At this
+# scale FABDEM is served from its pyramids (an area mean of the
+# 30 m elevation), which is what keeps the per-tile footprint
+# under Earth Engine's reprojection limit. It clips to the
+# buffered AOI (aoi_compute) so the focal mean has real
+# elevation on all sides of the true AOI edge. The same
+# elevation image feeds every focal radius below.
 
 elevation = (
     ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
     .mosaic()
-    .setDefaultProjection(GRID_CRS, None, 30)
+    .setDefaultProjection(GRID_CRS, None, FOCAL_BASE_M)
     .clip(aoi_compute)
     .double()
 )
 
-# 4. Compute and export 30 m TPI per focal radius ----
+# 4. Compute, aggregate, and export TPI per focal radius ----
 # For each radius in TPI_RADII, TPI is elevation minus the
-# neighborhood mean elevation at the native 30 m resolution,
-# cropped to the province and exported to Google Drive as its
-# own (tiled) GeoTIFF. It is NOT aggregated to 1 km here (see
-# the header note); r/aggregate_tpi_to_grid.R does that.
+# neighborhood mean elevation at FOCAL_BASE_M, then aggregated
+# to the 1 km reference grid by area mean and exported to
+# Google Drive as its own GeoTIFF on the grid's exact CRS and
+# transform.
 # Larger radii use bigger focal kernels and cost
 # proportionally more compute; the per-task batch
 # EECU-seconds in the report show where.
@@ -180,35 +186,55 @@ elevation = (
 
 tasks = []
 for radius in TPI_RADII:
-    # TPI at native 30 m: elevation minus neighborhood mean
-    # elevation. Kept as float so the downstream area mean
-    # averages full-precision values (rounding to integer
-    # metres happens after aggregation, in R). clip(aoi) crops
-    # to the province; the focal mean itself stays unbiased at
-    # the edge because it is computed from the buffered
-    # elevation (aoi_compute).
-    tpi = (
-        elevation
-        .subtract(
-            elevation.focalMean(radius, TPI_WINDOW_SHAPE, TPI_UNITS)
+    # TPI at FOCAL_BASE_M: elevation minus neighborhood mean
+    # elevation. Kept as float here so the area mean below
+    # averages full-precision values.
+    tpi = elevation.subtract(
+        elevation.focalMean(radius, TPI_WINDOW_SHAPE, TPI_UNITS)
+    )
+
+    # Aggregate FOCAL_BASE_M -> 1 km by area mean, pinned to the
+    # ABMI grid. reduceResolution averages every focal-base
+    # pixel that falls in each 1 km cell; the aggregation lands
+    # on the reference grid's exact cells because the export
+    # requests the output in that grid's crs + crsTransform
+    # (section 4.1) -- no explicit reproject() is used (over the
+    # whole province it fails with "Reprojection output too
+    # large"). round() stores TPI as integer metres (rounding
+    # after the mean so averaging keeps full precision; it
+    # rounds symmetrically to nearest, correct for negative
+    # valley values -- drop it for a continuous raster).
+    # toFloat() keeps float32 storage on purpose: clip(aoi) masks
+    # the pixels outside Alberta, and Earth Engine writes masked
+    # *integer* pixels as 0 with no nodata flag (so downstream
+    # tools read the out-of-province background as a valid 0),
+    # whereas masked *float* pixels export as NaN, which GDAL /
+    # terra read as NA. clip(aoi) crops to the true AOI,
+    # discarding the buffer ring used only to keep the focal
+    # mean unbiased.
+    tpi_1km = (
+        tpi
+        .reduceResolution(
+            reducer=ee.Reducer.mean(),
+            maxPixels=AGG_MAX_PIXELS,
         )
+        .round()
+        .toFloat()
         .clip(aoi)
         .rename(f"tpi_{radius}")
     )
 
-    # 4.1 Export this radius as a 30 m GeoTIFF ----
-    # crs_transform pins pixels to the 30 m lattice; scale is
-    # intentionally not passed. Large exports are sharded by
-    # Earth Engine into multiple tile files that the R step
-    # stitches back together.
+    # 4.1 Export this radius as a 1 km GeoTIFF ----
+    # crs_transform pins pixels to the reference grid; scale is
+    # intentionally not passed.
     task = export_image_to_drive(
-        image=tpi,
-        description=f"FABDEM_TPI_Alberta_30m_r{radius}",
+        image=tpi_1km,
+        description=f"FABDEM_TPI_Alberta_1km_r{radius}",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_tpi_alberta_30m_r{radius}",
+        file_name_prefix=f"fabdem_tpi_alberta_1km_r{radius}",
         crs=GRID_CRS,
-        crs_transform=EXPORT_CRS_TRANSFORM,
+        crs_transform=GRID_CRS_TRANSFORM,
         max_pixels=1e13,
         wait=False,
     )
