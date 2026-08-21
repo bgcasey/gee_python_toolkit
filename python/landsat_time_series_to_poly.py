@@ -6,7 +6,7 @@
 #   - Landsat 5/7/8/9 Surface Reflectance collections
 #     (LANDSAT/*/C02/T1_L2)
 #   - Summary polygons (test FeatureCollection)
-#   - FAO GAUL province boundaries (Alberta)
+#   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Per-polygon-per-date spectral-index summary CSV
 #     (ls_poly_summary) exported to Google Drive
@@ -42,6 +42,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from _gee_config import PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import create_date_list
 from utils.gee_utils import initialize_ee
@@ -87,7 +88,7 @@ report = ComputeReport(
 
 # 2. Define study area ----
 # Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise filters the FAO GAUL provinces for Alberta.
+# otherwise uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -98,14 +99,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 2.1 Define summary polygons ----
 # Five ~2 ha test polygons within the AOI, each tagged with

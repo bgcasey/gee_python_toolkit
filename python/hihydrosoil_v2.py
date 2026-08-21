@@ -7,7 +7,7 @@
 #     (FutureWater / sat-io)
 #   - Hydrologic_Soil_Group_250m Image
 #     (FutureWater / sat-io)
-#   - Alberta boundary (FAO GAUL level1)
+#   - AB2020 provincial boundary (EE asset)
 #   - XY points asset (may include locations outside AB)
 # outputs:
 #   - Multiband HiHydroSoil images clipped to Alberta,
@@ -54,7 +54,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_utils import initialize_ee
 
@@ -137,7 +137,7 @@ report = ComputeReport(
 
 # 2. Define study area ----
 # Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise filters the FAO GAUL provinces for Alberta.
+# otherwise uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -148,14 +148,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 2.1 Apply the asset filter. Empty/None = no filter. The
 # Hydrologic_Soil_Group asset is loaded separately (single

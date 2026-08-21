@@ -6,7 +6,7 @@
 #   - Sentinel-2 Surface Reflectance collection
 #     (COPERNICUS/S2_SR_HARMONIZED)
 #   - CA_FOREST_LC_VLCE2 land cover (for NDRS masks)
-#   - FAO GAUL province boundaries (Alberta)
+#   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Annual multiband spectral-index GeoTIFFs exported to
 #     Google Drive at native (10 m) resolution
@@ -41,7 +41,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils import sentinel_indices_and_masks as indices
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import (
@@ -84,7 +84,7 @@ report = ComputeReport(
 
 # 2. Define study area ----
 # Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise filters the FAO GAUL provinces for Alberta.
+# otherwise uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -95,14 +95,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 3. Build the time-series date list ----
 # create_date_list returns an ee.List; s2_fn iterates a

@@ -4,7 +4,7 @@
 # created: 2026-07-10
 # inputs:
 #   - NRCan/CDEM DEM ImageCollection
-#   - FAO GAUL province boundaries
+#   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Terrain metrics GeoTIFF for Alberta (exported to
 #     Google Drive): elevation, slope, aspect, northness,
@@ -35,7 +35,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_utils import export_image_to_drive, initialize_ee
 
@@ -65,7 +65,7 @@ report = ComputeReport(
 # 2. Define study area ----
 # This section defines the export geometry. It uses a
 # small test polygon when USE_TEST_AOI is True; otherwise
-# it filters the FAO GAUL provinces for Alberta.
+# it uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -76,14 +76,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 3. Terrain metrics calculation ----
 # This section mosaics and clips the DEM, then derives

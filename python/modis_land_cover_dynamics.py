@@ -5,7 +5,7 @@
 # inputs:
 #   - MODIS MCD12Q2 phenology collection
 #     (MODIS/061/MCD12Q2)
-#   - FAO GAUL province boundaries (Alberta)
+#   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Annual multiband phenology GeoTIFFs exported to
 #     Google Drive at native (500 m) resolution and at
@@ -36,7 +36,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import export_image_collection, focal_stats
 from utils.gee_utils import initialize_ee
@@ -69,7 +69,7 @@ report = ComputeReport(
 
 # 2. Define study area ----
 # Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise filters the FAO GAUL provinces for Alberta.
+# otherwise uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -80,14 +80,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 3. Load MODIS MCD12Q2 dataset ----
 # Loads the phenology collection, tags each image with its
