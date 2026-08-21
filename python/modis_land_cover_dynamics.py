@@ -47,7 +47,7 @@ from utils.gee_utils import initialize_ee
 MODIS_START_DATE = "2024-01-01"  # phenology year start
 MODIS_END_DATE = "2024-12-31"  # phenology year end
 EXPORT_SCALE = 500  # native MCD12Q2 resolution (m)
-EXPORT_CRS = "EPSG:4326"  # native export CRS
+EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle

@@ -69,7 +69,7 @@ LS_INDICES = [
     "NDWI", "SAVI", "SI",
 ]
 EXPORT_SCALE = 30  # native Landsat resolution (m)
-EXPORT_CRS = "EPSG:4326"  # native export CRS
+EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle

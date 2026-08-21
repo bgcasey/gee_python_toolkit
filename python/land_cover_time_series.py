@@ -56,7 +56,7 @@ from utils.gee_utils import initialize_ee
 LC_START_DATE = "2000-01-01"  # first land cover year
 LC_END_DATE = "2019-12-31"  # last available year (2019)
 EXPORT_SCALE = 30  # native land cover resolution (m)
-EXPORT_CRS = "EPSG:4326"  # native export CRS
+EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
 PRINT_STATS = True  # summary check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)

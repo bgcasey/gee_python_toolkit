@@ -39,7 +39,7 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 
 # 1.1 User parameters ----
 EXPORT_SCALE = 92.77  # meters (MERIT Hydro native ~90 m)
-EXPORT_CRS = "EPSG:4326"
+EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);

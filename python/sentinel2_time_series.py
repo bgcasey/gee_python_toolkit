@@ -65,7 +65,7 @@ S2_INDICES = [
     "NDRE1", "NDRE2", "NDRE3", "NDVI", "NDWI", "RDI",
 ]
 EXPORT_SCALE = 10  # native Sentinel-2 resolution (m)
-EXPORT_CRS = "EPSG:4326"  # native export CRS
+EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
