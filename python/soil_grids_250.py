@@ -5,11 +5,13 @@
 # inputs:
 #   - ISRIC SoilGrids 250m v2.0 mean Images
 #     (projects/soilgrids-isric/*_mean)
-#   - Alberta boundary (FAO GAUL level1)
+#   - AB2020 provincial boundary (EE asset)
 #   - XY points (may include locations outside Alberta)
 # outputs:
-#   - Multiband SoilGrids image clipped to Alberta,
-#     exported at native (~250 m) and 1000 m resolution.
+#   - Multiband SoilGrids image clipped to Alberta, exported
+#     either at native (~250 m, EPSG:4326) or aggregated to the
+#     ABMI 1 km reference grid (EPSG:3400), selected by
+#     EXPORT_TARGET.
 #   - Per-batch CSVs of point-level extracted soil values
 #     for ALL points (including those outside the AOI).
 # notes:
@@ -44,9 +46,11 @@
 #   export so that XY point extraction can return values
 #   for points located anywhere with SoilGrids coverage.
 #
-#   1000 m aggregation uses mean reduction on continuous
-#   layers. setDefaultProjection is required before
-#   reduceResolution when aggregating by a factor > 64.
+#   When EXPORT_TARGET is "reference_grid", aggregation to
+#   1 km uses area-mean reduction and lands on the ABMI
+#   reference grid via export_to_reference_grid
+#   (utils.gee_utils). setDefaultProjection pins the native
+#   base so reduceResolution knows the input resolution.
 #
 #   Citation:
 #   Poggio, L., de Sousa, L. M., Batjes, N. H., Heuvelink,
@@ -71,9 +75,13 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_image_to_drive,
+    export_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
@@ -81,6 +89,14 @@ from utils.gee_utils import initialize_ee
 NATIVE_SCALE = 250  # Native resolution (m)
 COARSE_SCALE = 1000  # Aggregated resolution (m)
 CRS = "EPSG:4326"
+
+# Raster export target. "native" exports the ~250 m SoilGrids
+# image in EPSG:4326 (ungridded). "reference_grid" aggregates
+# to the ABMI 1 km reference grid (EPSG:3400) by area mean via
+# export_to_reference_grid, so it stacks with the FABDEM
+# terrain layers. 250 m -> 1 km is only a 4x factor, well under
+# Earth Engine's per-tile reprojection limit.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
 # Base path for SoilGrids 250m v2.0 assets.
 BASE_PATH = "projects/soilgrids-isric/"
@@ -145,7 +161,7 @@ report = ComputeReport(
 
 # 2. Define study area ----
 # Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise filters the FAO GAUL provinces for Alberta.
+# otherwise uses the AB2020 provincial boundary asset.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -156,14 +172,9 @@ if USE_TEST_AOI:
         [-112.8, 55.5],  # Top-right corner
     ])
 else:
-    aoi = (
-        ee.FeatureCollection(
-            "FAO/GAUL_SIMPLIFIED_500m/2015/level1"
-        )
-        .filter(ee.Filter.eq("ADM0_NAME", "Canada"))
-        .filter(ee.Filter.eq("ADM1_NAME", "Alberta"))
-        .geometry()
-    )
+    aoi = ee.FeatureCollection(
+        PROVINCIAL_BOUNDARY_ASSET
+    ).geometry()
 
 # 3. Build SoilGrids image ----
 # Load each variable, apply its conversion factor, and
@@ -325,56 +336,52 @@ for b in range(1, N_BATCHES + 1):
         task.config["description"],
     )
 
-# 6. Aggregate to 1000 m (Alberta only) ----
-# Clip to AOI first so aggregation only operates on Alberta
-# pixels. setDefaultProjection is required before
-# reduceResolution when aggregating by more than a factor
-# of 64.
+# 6. Export raster output (Alberta only) ----
+# Clip to the AOI, then export at the target chosen by
+# EXPORT_TARGET. "native" writes the ~250 m image in EPSG:4326;
+# "reference_grid" aggregates to the ABMI 1 km grid (EPSG:3400,
+# area mean) so it stacks with the FABDEM terrain layers.
+# Native-resolution exports over Alberta are large; monitor the
+# Tasks tab and expect substantial processing time.
 
 soilgrids_ab = soilgrids.clip(aoi)
 
-soilgrids_1km = (
-    soilgrids_ab.setDefaultProjection(
+if EXPORT_TARGET == "reference_grid":
+    # setDefaultProjection pins the native base so the
+    # reduceResolution inside export_to_reference_grid knows the
+    # input resolution before aggregating to 1 km. 250 m -> 1 km
+    # is only a 4x factor, well under the reprojection limit.
+    soilgrids_base = soilgrids_ab.setDefaultProjection(
         crs=CRS, scale=NATIVE_SCALE
     )
-    .reduceResolution(
-        reducer=ee.Reducer.mean(), maxPixels=1024
+    export_to_reference_grid(
+        image=soilgrids_base,
+        aoi=aoi,
+        description="SoilGrids_AB_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="soilgrids_ab_1km",
+        aggregate=True,
+        wait=False,
     )
-    .reproject(crs=CRS, scale=COARSE_SCALE)
-    .toFloat()
-)
+elif EXPORT_TARGET == "native":
+    export_image_to_drive(
+        image=soilgrids_ab,
+        description="SoilGrids_AB_250m",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix="soilgrids_ab_250m",
+        scale=NATIVE_SCALE,
+        crs=CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
-# 7. Export raster outputs ----
-# Export native-resolution and 1000 m images (Alberta
-# only) to Google Drive. Native-resolution exports over
-# Alberta are large; monitor the Tasks tab and expect
-# substantial processing time.
-
-# 7.1 Native resolution (~250 m), Alberta only.
-ee.batch.Export.image.toDrive(
-    image=soilgrids_ab,
-    description="SoilGrids_AB_250m",
-    folder=DRIVE_FOLDER,
-    fileNamePrefix="soilgrids_ab_250m",
-    region=aoi,
-    scale=NATIVE_SCALE,
-    crs=CRS,
-    maxPixels=1e13,
-).start()
-
-# 7.2 1000 m aggregated, Alberta only.
-ee.batch.Export.image.toDrive(
-    image=soilgrids_1km,
-    description="SoilGrids_AB_1000m",
-    folder=DRIVE_FOLDER,
-    fileNamePrefix="soilgrids_ab_1000m",
-    region=aoi,
-    scale=COARSE_SCALE,
-    crs=CRS,
-    maxPixels=1e13,
-).start()
-
-# 8. Compute usage report ----
+# 7. Compute usage report ----
 # Multiple export tasks are launched above, so this does
 # not block on any single task; it writes the collected
 # section profiles to gee_compute_reports/.
