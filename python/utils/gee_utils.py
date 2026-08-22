@@ -165,7 +165,9 @@ def define_study_area(use_test_aoi=False, buffer_m=0):
     if use_test_aoi:
         aoi = ee.Geometry.Polygon(TEST_AOI_COORDS)
     else:
-        aoi = ee.FeatureCollection(PROVINCIAL_BOUNDARY_ASSET).geometry()
+        aoi = ee.FeatureCollection(
+            PROVINCIAL_BOUNDARY_ASSET
+        ).geometry()
 
     if buffer_m:
         # maxError keeps buffering the detailed boundary cheap;
@@ -315,3 +317,90 @@ def export_to_reference_grid(
         max_pixels=max_pixels,
         wait=wait,
     )
+
+
+def export_collection_to_reference_grid(
+    collection,
+    aoi,
+    file_name_fn,
+    folder="gee_exports",
+    reducer=None,
+    agg_base_m=None,
+    agg_max_pixels=1024,
+    round_values=False,
+    max_pixels=1e13,
+):
+    """Aggregate each image in a collection onto the ABMI grid.
+
+    The collection version of export_to_reference_grid: it
+    iterates the collection client-side and, for each image,
+    aggregates it (area mean by default) onto the ABMI 1 km
+    reference grid and exports it on the grid's crs +
+    crsTransform, so every per-image surface (e.g. one per year)
+    stacks with the other 1 km covariates. Mirrors
+    export_image_collection (gee_helpers) but snaps to the grid.
+
+    agg_base_m pins each image to that base projection
+    (setDefaultProjection at GRID_CRS) before aggregating. Set
+    it coarse enough that ~256 km / agg_base_m stays under Earth
+    Engine's per-tile reprojection limit (~8600 px) -- e.g.
+    ~50 m for a 10-30 m source; it can equal the native scale
+    for coarse sources (e.g. 500 m for MODIS). reduceResolution
+    needs it to know the input resolution.
+
+    Args:
+        collection (ee.ImageCollection): Images to aggregate.
+        aoi (ee.Geometry): Crop boundary and export region.
+        file_name_fn (callable): Returns a file name per image.
+        folder (str): Google Drive folder.
+        reducer (ee.Reducer): Aggregation reducer; defaults to
+            ee.Reducer.mean(). Use ee.Reducer.mode() for
+            categorical layers (e.g. land cover class).
+        agg_base_m (float): Base resolution (m) each image is
+            pinned to before aggregating (see above).
+        agg_max_pixels (int): reduceResolution maxPixels.
+        round_values (bool): Round to integer before storing.
+        max_pixels (float): Export pixel budget per image.
+
+    Returns:
+        list: The started ee.batch.Task export tasks.
+    """
+    from _gee_config import GRID_CRS, GRID_CRS_TRANSFORM
+
+    col_list = collection.toList(collection.size())
+    size = collection.size().getInfo()
+
+    tasks = []
+    for i in range(size):
+        try:
+            img = ee.Image(col_list.get(i))
+            file_name = file_name_fn(img)
+            if not file_name or not isinstance(file_name, str):
+                raise ValueError("Invalid file name generated.")
+
+            if agg_base_m is not None:
+                img = img.setDefaultProjection(
+                    crs=GRID_CRS, scale=agg_base_m
+                )
+            gridded = to_reference_grid(
+                img, aoi, reducer, agg_max_pixels, round_values
+            )
+
+            task = ee.batch.Export.image.toDrive(
+                image=gridded,
+                description=file_name,
+                folder=folder,
+                fileNamePrefix=file_name,
+                region=aoi,
+                crs=GRID_CRS,
+                crsTransform=GRID_CRS_TRANSFORM,
+                maxPixels=max_pixels,
+            )
+            task.start()
+            print(f"Started export task: {file_name}")
+            tasks.append(task)
+        except Exception as err:
+            print(f"Error processing image: {err}")
+            continue
+
+    return tasks
