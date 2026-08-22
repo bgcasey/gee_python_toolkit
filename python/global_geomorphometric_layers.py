@@ -7,8 +7,10 @@
 #     (projects/sat-io/open-datasets/Geomorpho90m)
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
-#   - Multiband Geomorpho90m GeoTIFF for Alberta (exported
-#     to Google Drive)
+#   - Multiband Geomorpho90m GeoTIFF for Alberta, at native
+#     (~90 m) or on the ABMI 1 km reference grid, per
+#     EXPORT_TARGET (exported to Google Drive). The 1 km
+#     product drops the raw 'aspect' band (see notes).
 # notes:
 #   This script loads multiple geomorphometric variables
 #   from the Geomorpho90m dataset, mosaics and clips them
@@ -41,13 +43,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
-from utils.gee_utils import export_image_to_drive, initialize_ee
+from utils.gee_utils import (
+    export_image_to_drive,
+    export_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
 EXPORT_SCALE = 90  # meters (Geomorpho90m native ~90 m)
 EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
+# Raster export target. "native" exports the full ~90 m stack;
+# "reference_grid" aggregates (area mean) onto the ABMI 1 km
+# grid so it stacks with the other 1 km covariates. Geomorpho90m
+# is a stored (pyramided) dataset, so 90 m -> 1 km is well under
+# Earth Engine's per-tile reprojection limit.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
@@ -159,22 +171,46 @@ if PRINT_STATS or COMPUTE_REPORT:
     print("Geomorpho90m min and max values:", stats)
 
 # 4. Export data ----
-# This section exports the multiband Geomorpho90m image to
-# Google Drive as a GeoTIFF. Set wait=True to block until
-# the task finishes; otherwise monitor progress at
-# https://code.earthengine.google.com/tasks
+# Export at the target chosen by EXPORT_TARGET. "native" writes
+# the full ~90 m stack; "reference_grid" aggregates (area mean)
+# onto the ABMI 1 km grid. The raw 'aspect' band is dropped from
+# the 1 km product because averaging a circular angle (0-360
+# deg) is meaningless; 'aspect-cosine' and 'aspect-sine' carry
+# aspect correctly and mean cleanly. setDefaultProjection pins
+# the native base for reduceResolution. Set wait=True to block;
+# otherwise monitor at https://code.earthengine.google.com/tasks
 
-task = export_image_to_drive(
-    image=geomorpho90m,
-    description="Geomorpho90m_Export",
-    region=aoi,
-    folder=DRIVE_FOLDER,
-    file_name_prefix="global_geomorphometric_layers",
-    scale=EXPORT_SCALE,
-    crs=EXPORT_CRS,
-    max_pixels=1e13,
-    wait=False,
-)
+if EXPORT_TARGET == "reference_grid":
+    grid_bands = [n for n in COLLECTION_NAMES if n != "aspect"]
+    geomorpho90m_grid = geomorpho90m.select(
+        grid_bands
+    ).setDefaultProjection(crs=EXPORT_CRS, scale=EXPORT_SCALE)
+    task = export_to_reference_grid(
+        image=geomorpho90m_grid,
+        aoi=aoi,
+        description="Geomorpho90m_AB_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="global_geomorphometric_layers_1km",
+        aggregate=True,
+        wait=False,
+    )
+elif EXPORT_TARGET == "native":
+    task = export_image_to_drive(
+        image=geomorpho90m,
+        description="Geomorpho90m_Export",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix="global_geomorphometric_layers",
+        scale=EXPORT_SCALE,
+        crs=EXPORT_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 5. Compute usage report ----
 # This section waits for the export to finish, records

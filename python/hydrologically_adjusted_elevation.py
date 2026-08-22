@@ -6,7 +6,9 @@
 #   - MERIT Hydro (MERIT/Hydro/v1_0_1)
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
-#   - HAND GeoTIFF for Alberta (exported to Google Drive)
+#   - HAND GeoTIFF for Alberta, at native (~90 m) or on the
+#     ABMI 1 km reference grid, per EXPORT_TARGET (exported to
+#     Google Drive).
 # notes:
 #   This script extracts the hydrologically adjusted
 #   elevations (Height Above Nearest Drainage - HAND) from
@@ -33,13 +35,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
-from utils.gee_utils import export_image_to_drive, initialize_ee
+from utils.gee_utils import (
+    export_image_to_drive,
+    export_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
 EXPORT_SCALE = 92.77  # meters (MERIT Hydro native ~90 m)
 EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
+# Raster export target. "native" exports the ~90 m HAND image;
+# "reference_grid" aggregates (area mean) onto the ABMI 1 km
+# grid so it stacks with the other 1 km covariates. HAND is a
+# stored MERIT Hydro band (pyramided), so 90 m -> 1 km is well
+# under Earth Engine's per-tile reprojection limit.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
@@ -100,22 +112,42 @@ if PRINT_STATS or COMPUTE_REPORT:
     print("HAND min and max values:", stats)
 
 # 4. Export data ----
-# This section exports the HAND image to Google Drive as a
-# GeoTIFF. Set wait=True to block until the task finishes;
-# otherwise monitor progress at
+# Export at the target chosen by EXPORT_TARGET. "native" writes
+# the ~90 m HAND image; "reference_grid" aggregates it (area
+# mean) onto the ABMI 1 km grid. setDefaultProjection pins the
+# native base so reduceResolution knows the input resolution.
+# Set wait=True to block; otherwise monitor progress at
 # https://code.earthengine.google.com/tasks
 
-task = export_image_to_drive(
-    image=hand,
-    description="HAND_Export",
-    region=aoi,
-    folder=DRIVE_FOLDER,
-    file_name_prefix="hydrologically_adjusted_elevations",
-    scale=EXPORT_SCALE,
-    crs=EXPORT_CRS,
-    max_pixels=1e13,
-    wait=False,
-)
+if EXPORT_TARGET == "reference_grid":
+    task = export_to_reference_grid(
+        image=hand.setDefaultProjection(
+            crs=EXPORT_CRS, scale=EXPORT_SCALE
+        ),
+        aoi=aoi,
+        description="HAND_AB_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="hydrologically_adjusted_elevations_1km",
+        aggregate=True,
+        wait=False,
+    )
+elif EXPORT_TARGET == "native":
+    task = export_image_to_drive(
+        image=hand,
+        description="HAND_Export",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix="hydrologically_adjusted_elevations",
+        scale=EXPORT_SCALE,
+        crs=EXPORT_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 5. Compute usage report ----
 # This section waits for the export to finish, records

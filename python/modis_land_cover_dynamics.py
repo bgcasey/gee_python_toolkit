@@ -7,9 +7,10 @@
 #     (MODIS/061/MCD12Q2)
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
-#   - Annual multiband phenology GeoTIFFs exported to
-#     Google Drive at native (500 m) resolution and at
-#     focal scales (0/150/250 m) in EPSG:3978
+#   - Annual multiband phenology GeoTIFFs exported to Google
+#     Drive, at native (500 m) or aggregated to the ABMI 1 km
+#     reference grid (per EXPORT_TARGET), and at focal scales
+#     (0/150/250 m) in EPSG:3978.
 # notes:
 #   Python port of modis_land_cover_dynamics.js for the
 #   Earth Engine Python API. Extracts all bands from the
@@ -39,7 +40,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import export_image_collection, focal_stats
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_collection_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
@@ -48,6 +52,14 @@ MODIS_START_DATE = "2024-01-01"  # phenology year start
 MODIS_END_DATE = "2024-12-31"  # phenology year end
 EXPORT_SCALE = 500  # native MCD12Q2 resolution (m)
 EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
+# Export target for the annual surfaces (section 5). "native"
+# writes each year at 500 m; "reference_grid" aggregates each
+# year (area mean) onto the ABMI 1 km grid so the series stacks
+# with the other 1 km covariates. 500 m -> 1 km is only ~2x, so
+# AGG_BASE_M stays at the 500 m native scale. The focal analysis
+# (section 6) is a separate 990 m product, unaffected here.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+AGG_BASE_M = 500  # aggregation base (m) for the grid path
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
@@ -180,14 +192,29 @@ def modis_file_name(img):
     return "MODIS_MCD12Q2_" + year
 
 
-export_image_collection(
-    dataset,
-    aoi,
-    DRIVE_FOLDER,
-    EXPORT_SCALE,
-    EXPORT_CRS,
-    modis_file_name,
-)
+if EXPORT_TARGET == "reference_grid":
+    export_collection_to_reference_grid(
+        dataset,
+        aoi,
+        lambda img: modis_file_name(img) + "_1km",
+        folder=DRIVE_FOLDER,
+        reducer=ee.Reducer.mean(),
+        agg_base_m=AGG_BASE_M,
+    )
+elif EXPORT_TARGET == "native":
+    export_image_collection(
+        dataset,
+        aoi,
+        DRIVE_FOLDER,
+        EXPORT_SCALE,
+        EXPORT_CRS,
+        modis_file_name,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 6. Focal analysis ----
 # Exports focal (neighbourhood) statistics at 0/150/250 m

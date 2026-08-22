@@ -9,7 +9,8 @@
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Annual multiband spectral-index GeoTIFFs exported to
-#     Google Drive at native (10 m) resolution
+#     Google Drive, at native (10 m) or aggregated to the ABMI
+#     1 km reference grid, per EXPORT_TARGET.
 # notes:
 #   Python port of sentinel2_time_series.js for the Earth
 #   Engine Python API. Builds an annual date list, computes
@@ -48,7 +49,10 @@ from utils.gee_helpers import (
     create_date_list,
     export_image_collection,
 )
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_collection_to_reference_grid,
+    initialize_ee,
+)
 from utils.sentinel_time_series import s2_fn
 
 # 1. Setup ----
@@ -66,6 +70,14 @@ S2_INDICES = [
 ]
 EXPORT_SCALE = 10  # native Sentinel-2 resolution (m)
 EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
+# Export target for the annual surfaces. "native" writes each
+# year at ~10 m (EPSG:3400); "reference_grid" aggregates each
+# year (area mean) onto the ABMI 1 km grid so the series stacks
+# with the other 1 km covariates. AGG_BASE_M is the coarse base
+# each year is pinned to before aggregating so the 10 m -> 1 km
+# jump stays under Earth Engine's per-tile reprojection limit.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+AGG_BASE_M = 50  # aggregation base (m) for the grid path
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
@@ -167,14 +179,29 @@ def sentinel_file_name(img):
     return "sentinel2_multiband_" + str(year)
 
 
-export_image_collection(
-    s2,
-    aoi,
-    DRIVE_FOLDER,
-    EXPORT_SCALE,
-    EXPORT_CRS,
-    sentinel_file_name,
-)
+if EXPORT_TARGET == "reference_grid":
+    export_collection_to_reference_grid(
+        s2,
+        aoi,
+        lambda img: sentinel_file_name(img) + "_1km",
+        folder=DRIVE_FOLDER,
+        reducer=ee.Reducer.mean(),
+        agg_base_m=AGG_BASE_M,
+    )
+elif EXPORT_TARGET == "native":
+    export_image_collection(
+        s2,
+        aoi,
+        DRIVE_FOLDER,
+        EXPORT_SCALE,
+        EXPORT_CRS,
+        sentinel_file_name,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 7. Compute usage report ----
 # Writes the profiled sections to gee_compute_reports/.

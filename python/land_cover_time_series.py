@@ -8,8 +8,9 @@
 #     CA_FOREST_LC_VLCE2)
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
-#   - Annual land cover GeoTIFFs (forest_lc_class) exported
-#     to Google Drive at native (30 m) resolution
+#   - Annual land cover GeoTIFFs (forest_lc_class) exported to
+#     Google Drive, at native (30 m) or aggregated to the ABMI
+#     1 km reference grid by modal class, per EXPORT_TARGET.
 # notes:
 #   Runnable land cover time-series script for the Earth
 #   Engine Python API. The original
@@ -48,7 +49,10 @@ from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.annual_forest_land_cover import lc_fn
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import export_image_collection
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_collection_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
@@ -57,6 +61,16 @@ LC_START_DATE = "2000-01-01"  # first land cover year
 LC_END_DATE = "2019-12-31"  # last available year (2019)
 EXPORT_SCALE = 30  # native land cover resolution (m)
 EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
+# Export target for the annual surfaces. "native" writes each
+# year at 30 m; "reference_grid" aggregates each year onto the
+# ABMI 1 km grid by MODAL class (land cover is categorical, so
+# mean is meaningless). AGG_BASE_M is the coarse base each year
+# is pinned to before aggregating so the 30 m -> 1 km jump stays
+# under the reprojection limit; because mode needs fine pixels,
+# the base subsamples classes at AGG_BASE_M spacing, so the
+# 1 km class is the dominant class of that subsample.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+AGG_BASE_M = 90  # aggregation base (m) for the grid path
 PRINT_STATS = True  # summary check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
@@ -125,14 +139,30 @@ def land_cover_file_name(img):
     return "forest_lc_class_" + str(year)
 
 
-export_image_collection(
-    lc,
-    aoi,
-    DRIVE_FOLDER,
-    EXPORT_SCALE,
-    EXPORT_CRS,
-    land_cover_file_name,
-)
+if EXPORT_TARGET == "reference_grid":
+    export_collection_to_reference_grid(
+        lc,
+        aoi,
+        lambda img: land_cover_file_name(img) + "_1km",
+        folder=DRIVE_FOLDER,
+        reducer=ee.Reducer.mode(),
+        agg_base_m=AGG_BASE_M,
+        round_values=True,
+    )
+elif EXPORT_TARGET == "native":
+    export_image_collection(
+        lc,
+        aoi,
+        DRIVE_FOLDER,
+        EXPORT_SCALE,
+        EXPORT_CRS,
+        land_cover_file_name,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 5. Compute usage report ----
 # Writes the profiled sections to gee_compute_reports/.

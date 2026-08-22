@@ -8,8 +8,9 @@
 #   - AB2020 provincial boundary (EE asset)
 # outputs:
 #   - Annual multiband spectral-index GeoTIFFs exported to
-#     Google Drive at native (30 m) resolution and at
-#     focal scales (0/150/250 m) in EPSG:3978
+#     Google Drive, at native (30 m) or aggregated to the ABMI
+#     1 km reference grid (per EXPORT_TARGET), and at focal
+#     scales (0/150/250 m) in EPSG:3978.
 #   - Per-band min/max summary CSV (image_stats)
 # notes:
 #   Python port of landsat_time_series.js for the Earth
@@ -50,7 +51,10 @@ from utils.gee_helpers import (
     export_stats_to_csv,
     focal_stats,
 )
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_collection_to_reference_grid,
+    initialize_ee,
+)
 from utils.landsat_time_series import ls_fn
 
 # 1. Setup ----
@@ -70,6 +74,16 @@ LS_INDICES = [
 ]
 EXPORT_SCALE = 30  # native Landsat resolution (m)
 EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
+# Export target for the annual surfaces (section 6). "native"
+# writes each year at 30 m; "reference_grid" aggregates each
+# year (area mean) onto the ABMI 1 km grid so the series stacks
+# with the other 1 km covariates. AGG_BASE_M is the coarse base
+# each year is pinned to before aggregating so the 30 m -> 1 km
+# jump stays under Earth Engine's per-tile reprojection limit.
+# The focal analysis (section 7) is a separate 990 m product
+# and is not affected by this toggle.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+AGG_BASE_M = 50  # aggregation base (m) for the grid path
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
@@ -175,14 +189,29 @@ def landsat_file_name(img):
     return "landsat_multiband_" + str(year)
 
 
-export_image_collection(
-    ls,
-    aoi,
-    DRIVE_FOLDER,
-    EXPORT_SCALE,
-    EXPORT_CRS,
-    landsat_file_name,
-)
+if EXPORT_TARGET == "reference_grid":
+    export_collection_to_reference_grid(
+        ls,
+        aoi,
+        lambda img: landsat_file_name(img) + "_1km",
+        folder=DRIVE_FOLDER,
+        reducer=ee.Reducer.mean(),
+        agg_base_m=AGG_BASE_M,
+    )
+elif EXPORT_TARGET == "native":
+    export_image_collection(
+        ls,
+        aoi,
+        DRIVE_FOLDER,
+        EXPORT_SCALE,
+        EXPORT_CRS,
+        landsat_file_name,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 7. Focal analysis ----
 # Exports focal (neighbourhood) statistics at 0/150/250 m
