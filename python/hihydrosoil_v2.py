@@ -11,7 +11,9 @@
 #   - XY points asset (may include locations outside AB)
 # outputs:
 #   - Multiband HiHydroSoil images clipped to Alberta,
-#     exported at native (~250 m) and 1000 m resolution.
+#     exported at native (~250 m) and on the ABMI 1 km
+#     reference grid (EPSG:3400, aligned to stack with the
+#     FABDEM 1 km layers).
 #   - Per-batch CSVs of point-level extracted values.
 # notes:
 #   HiHydroSoil v2.0 provides global soil hydraulic
@@ -28,10 +30,11 @@
 #   names of the form <index>_<asset>. The
 #   Hydrologic_Soil_Group_250m asset is a single Image.
 #
-#   1000 m exports use ee.Reducer.mean() for continuous
-#   layers and ee.Reducer.mode() for categorical layers
-#   (STC, HSG) to avoid producing meaningless averages of
-#   class codes.
+#   The 1 km exports go through export_to_reference_grid
+#   (utils.gee_utils) so they land on the ABMI reference grid.
+#   Continuous layers aggregate with ee.Reducer.mean();
+#   categorical layers (STC, HSG) use ee.Reducer.mode() to
+#   avoid meaningless averages of class codes.
 #
 #   Citation:
 #   Simons, G.W.H., R. Koster, P. Droogers. 2020.
@@ -56,14 +59,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import (
+    export_to_reference_grid,
+    initialize_ee,
+)
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
 NATIVE_SCALE = 250  # Native resolution (m)
 COARSE_SCALE = 1000  # Aggregated resolution (m)
-CRS = "EPSG:4326"  # Alternative: 'EPSG:3400' (AB 10-TM)
+CRS = "EPSG:3400"  # AB 10-TM (Forest)
 
 # Base path for HiHydroSoil v2.0 assets.
 BASE_PATH = "projects/sat-io/open-datasets/HiHydroSoilv2_0/"
@@ -428,54 +434,32 @@ if hihydro_combined is not None:
             "description"
         ])
 
-# 6. Aggregate to 1000 m (Alberta only) ----
-# Clip to AOI first so aggregation and export only operate
-# on Alberta pixels. setDefaultProjection is required
-# before reduceResolution when aggregating by more than a
-# factor of 64.
+# 6. Clip to the AOI (Alberta only) ----
+# Each group is clipped to Alberta once. The clipped image is
+# exported at native resolution and also feeds the 1 km
+# aggregation in section 7 (done by export_to_reference_grid,
+# so no manual reduceResolution / reproject is needed here).
 
 hihydro_continuous_ab = None
 hihydro_categorical_ab = None
-hihydro_continuous_1km = None
-hihydro_categorical_1km = None
 
-# 6.1 Continuous: clip to AB and aggregate to 1 km (mean).
 if has_continuous:
     hihydro_continuous_ab = hihydro_continuous.clip(aoi)
-    hihydro_continuous_1km = (
-        hihydro_continuous_ab.setDefaultProjection(
-            crs=CRS, scale=NATIVE_SCALE
-        )
-        .reduceResolution(
-            reducer=ee.Reducer.mean(), maxPixels=1024
-        )
-        .reproject(crs=CRS, scale=COARSE_SCALE)
-        .toFloat()
-    )
-
-# 6.2 Categorical: clip to AB and aggregate to 1 km (mode).
 if has_categorical:
     hihydro_categorical_ab = hihydro_categorical.clip(aoi)
-    hihydro_categorical_1km = (
-        hihydro_categorical_ab.setDefaultProjection(
-            crs=CRS, scale=NATIVE_SCALE
-        )
-        .reduceResolution(
-            reducer=ee.Reducer.mode(), maxPixels=1024
-        )
-        .reproject(crs=CRS, scale=COARSE_SCALE)
-        .toInt16()
-    )
 
 # 7. Export raster outputs ----
-# Export native-resolution and 1000 m images to Google
-# Drive. These are large exports (especially native
-# continuous). Monitor the Tasks tab and expect
-# substantial processing time. Either group is skipped if
-# no assets passed the filter.
+# Native-resolution images plus 1 km images aggregated onto
+# the ABMI reference grid via export_to_reference_grid, so the
+# 1 km outputs share the exact lattice with the FABDEM 1 km
+# layers. Continuous layers aggregate by area mean; categorical
+# layers by modal class. setDefaultProjection pins the native
+# base so reduceResolution knows the input resolution before
+# aggregating. Either group is skipped if no assets passed the
+# filter. These are large exports; monitor the Tasks tab.
 
 if has_continuous:
-    # 7.1 Continuous layers - native resolution (~250 m).
+    # 7.1 Continuous - native resolution (~250 m).
     ee.batch.Export.image.toDrive(
         image=hihydro_continuous_ab,
         description="HiHydroSoil_Continuous_AB_250m",
@@ -487,20 +471,22 @@ if has_continuous:
         maxPixels=1e13,
     ).start()
 
-    # 7.2 Continuous layers - 1000 m.
-    ee.batch.Export.image.toDrive(
-        image=hihydro_continuous_1km,
-        description="HiHydroSoil_Continuous_AB_1000m",
+    # 7.2 Continuous - 1 km on the ABMI reference grid (mean).
+    export_to_reference_grid(
+        image=hihydro_continuous_ab.setDefaultProjection(
+            crs=CRS, scale=NATIVE_SCALE
+        ),
+        aoi=aoi,
+        description="HiHydroSoil_Continuous_AB_1km",
         folder=DRIVE_FOLDER,
-        fileNamePrefix="hihydrosoil_continuous_ab_1000m",
-        region=aoi,
-        scale=COARSE_SCALE,
-        crs=CRS,
-        maxPixels=1e13,
-    ).start()
+        file_name_prefix="hihydrosoil_continuous_ab_1km",
+        aggregate=True,
+        reducer=ee.Reducer.mean(),
+        wait=False,
+    )
 
 if has_categorical:
-    # 7.3 Categorical layers - native resolution (~250 m).
+    # 7.3 Categorical - native resolution (~250 m).
     ee.batch.Export.image.toDrive(
         image=hihydro_categorical_ab,
         description="HiHydroSoil_Categorical_AB_250m",
@@ -512,17 +498,22 @@ if has_categorical:
         maxPixels=1e13,
     ).start()
 
-    # 7.4 Categorical layers - 1000 m.
-    ee.batch.Export.image.toDrive(
-        image=hihydro_categorical_1km,
-        description="HiHydroSoil_Categorical_AB_1000m",
+    # 7.4 Categorical - 1 km on the ABMI reference grid (mode).
+    # Note: export_to_reference_grid casts to float32 (masked
+    # pixels export as NaN/NA); class codes are integer-valued
+    # floats rather than the native int16.
+    export_to_reference_grid(
+        image=hihydro_categorical_ab.setDefaultProjection(
+            crs=CRS, scale=NATIVE_SCALE
+        ),
+        aoi=aoi,
+        description="HiHydroSoil_Categorical_AB_1km",
         folder=DRIVE_FOLDER,
-        fileNamePrefix="hihydrosoil_categorical_ab_1000m",
-        region=aoi,
-        scale=COARSE_SCALE,
-        crs=CRS,
-        maxPixels=1e13,
-    ).start()
+        file_name_prefix="hihydrosoil_categorical_ab_1km",
+        aggregate=True,
+        reducer=ee.Reducer.mode(),
+        wait=False,
+    )
 
 # 8. Compute usage report ----
 # Multiple export tasks are launched above, so this does

@@ -9,7 +9,7 @@
 #   - XY points (may include locations outside Alberta)
 # outputs:
 #   - Multiband SoilGrids image clipped to Alberta, exported
-#     either at native (~250 m, EPSG:4326) or aggregated to the
+#     either at native (~250 m, EPSG:3400) or aggregated to the
 #     ABMI 1 km reference grid (EPSG:3400), selected by
 #     EXPORT_TARGET.
 #   - Per-batch CSVs of point-level extracted soil values
@@ -88,10 +88,10 @@ from utils.gee_utils import (
 # 1.1 User parameters ----
 NATIVE_SCALE = 250  # Native resolution (m)
 COARSE_SCALE = 1000  # Aggregated resolution (m)
-CRS = "EPSG:4326"
+CRS = "EPSG:3400"  # AB 10-TM (Forest)
 
 # Raster export target. "native" exports the ~250 m SoilGrids
-# image in EPSG:4326 (ungridded). "reference_grid" aggregates
+# image in EPSG:3400 (ungridded). "reference_grid" aggregates
 # to the ABMI 1 km reference grid (EPSG:3400) by area mean via
 # export_to_reference_grid, so it stacks with the FABDEM
 # terrain layers. 250 m -> 1 km is only a 4x factor, well under
@@ -338,7 +338,7 @@ for b in range(1, N_BATCHES + 1):
 
 # 6. Export raster output (Alberta only) ----
 # Clip to the AOI, then export at the target chosen by
-# EXPORT_TARGET. "native" writes the ~250 m image in EPSG:4326;
+# EXPORT_TARGET. "native" writes the ~250 m image in EPSG:3400;
 # "reference_grid" aggregates to the ABMI 1 km grid (EPSG:3400,
 # area mean) so it stacks with the FABDEM terrain layers.
 # Native-resolution exports over Alberta are large; monitor the
