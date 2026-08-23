@@ -130,8 +130,11 @@ class ComputeReport:
         Args:
             name (str): Section label used in the report.
             raise_on_error (bool): If True (default), a failure
-                is re-raised after being recorded, so the
-                script still fails loudly. Set False for
+                *in the profiled block* is re-raised after being
+                recorded, so the script still fails loudly. A
+                failure to retrieve the profile itself is never
+                re-raised: it is recorded as a warning and the
+                run continues. Set False for
                 optional diagnostic blocks (e.g., a min/max
                 preview) whose failure should not abort the
                 run; the error is recorded and execution
@@ -147,33 +150,71 @@ class ComputeReport:
         start = time.time()
         status = "OK"
         error_text = None
+        # Distinguishes a failure in the caller's block from one
+        # raised by ee.profilePrinting on exit. The assignment is
+        # reached only when the block completed normally: if the
+        # block raises, the exception is thrown in at the yield.
+        body_ok = False
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
                 with ee.profilePrinting(destination=buf):
                     yield
+                    body_ok = True
             except Exception as exc:
-                status = "FAILED"
-                error_text = (
-                    f"{type(exc).__name__}: {exc}\n"
-                    f"{traceback.format_exc()}"
-                )
-                self._record_issue(
-                    "ERROR",
-                    f"Section '{name}' failed: "
-                    f"{type(exc).__name__}: {exc}",
-                )
-                if raise_on_error:
-                    raise
+                if body_ok:
+                    # The profiled code worked; only the
+                    # profile fetch failed. Earth Engine can hand
+                    # back a profile ID that getProfiles() will
+                    # not resolve ("Profile not found"). Observed
+                    # intermittently in sections that evaluate
+                    # many separate getInfo calls - it is not a
+                    # timeout (seen in a 6 s / 14-call section,
+                    # while slower single-call sections were
+                    # fine), and which section trips it varies
+                    # between runs. Batching a section into one
+                    # call avoids it. Either way this is a
+                    # diagnostics problem, never a reason to
+                    # abort a run whose real work succeeded.
+                    status = "OK (profile unavailable)"
+                    self._record_issue(
+                        "WARNING",
+                        f"Section '{name}' ran successfully but "
+                        f"its EECU profile could not be "
+                        f"retrieved: {type(exc).__name__}: {exc}",
+                    )
+                else:
+                    status = "FAILED"
+                    error_text = (
+                        f"{type(exc).__name__}: {exc}\n"
+                        f"{traceback.format_exc()}"
+                    )
+                    self._record_issue(
+                        "ERROR",
+                        f"Section '{name}' failed: "
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                    if raise_on_error:
+                        raise
             finally:
                 elapsed = time.time() - start
                 profile = buf.getvalue().strip()
                 if not profile:
-                    profile = (
-                        "No server-side computation was "
-                        "evaluated in this section. Add a "
-                        "getInfo()-style call to profile it."
-                    )
+                    if status.startswith("OK (profile"):
+                        profile = (
+                            "Unavailable: the section ran but "
+                            "Earth Engine would not return its "
+                            "profile. Seen intermittently in "
+                            "sections that evaluate many "
+                            "separate getInfo calls; batch them "
+                            "into one call to profile it."
+                        )
+                    else:
+                        profile = (
+                            "No server-side computation was "
+                            "evaluated in this section. Add a "
+                            "getInfo()-style call to profile it."
+                        )
                 block = (
                     f"--- Section: {name} ---\n"
                     f"Status: {status}\n"
