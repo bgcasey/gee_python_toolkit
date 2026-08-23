@@ -12,8 +12,9 @@
 #     either at native (~250 m, EPSG:3400) or aggregated to the
 #     ABMI 1 km reference grid (EPSG:3400), selected by
 #     EXPORT_TARGET.
-#   - Per-batch CSVs of point-level extracted soil values
-#     for ALL points (including those outside the AOI).
+#   - Per-batch CSVs of point-level extracted soil values for
+#     ALL points including those outside the AOI (optional,
+#     gated by EXTRACT_XY_POINTS).
 # notes:
 #   SoilGrids 250m v2.0 is a globally consistent,
 #   data-driven system that predicts soil properties at
@@ -107,12 +108,12 @@ BASE_PATH = "projects/soilgrids-isric/"
 # represented is skipped at load time; remaining variables
 # are loaded fully and filtered after.
 SELECTED_BANDS = [
-    "sand_0-5cm_mean",
-    "clay_0-5cm_mean",
-    "soc_0-5cm_mean",
-    "phh2o_0-5cm_mean",
-    "cfvo_0-5cm_mean",
-    "cec_0-5cm_mean",
+    # "sand_0-5cm_mean",
+    # "clay_0-5cm_mean",
+    # "soc_0-5cm_mean",
+    # "phh2o_0-5cm_mean",
+    # "cfvo_0-5cm_mean",
+    # "cec_0-5cm_mean",
 ]
 
 # SoilGrids variables and their conversion factors. Mapped
@@ -132,6 +133,11 @@ VARIABLES = [
     {"name": "ocs", "factor": 10},
 ]
 
+# Point extraction (section 5). Set EXTRACT_XY_POINTS = False to
+# skip the batched XY point-value extraction and its per-batch
+# CSV exports (e.g. when you only need the raster output).
+EXTRACT_XY_POINTS = False  # True: extract SoilGrids values to XY points
+
 # XY points asset. Must contain a 'batch' property with
 # integer values matching the loop range below (N_BATCHES).
 XY_POINTS_ASSET = (
@@ -144,7 +150,7 @@ TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 100  # Match the number of batches assigned in R
 
 PRINT_STATS = True  # min/max check (slow for large AOIs)
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 
 # 1.2 Initialize Earth Engine ----
@@ -285,56 +291,58 @@ if PRINT_STATS or COMPUTE_REPORT:
 # upload) and this loop launches one export task per
 # batch. Each batch exports a CSV named
 # 'soilgrids_xy_batchNN'. Merge the CSVs in R afterward.
+# The whole section is skipped when EXTRACT_XY_POINTS is False.
 
-# 5.1 Load XY points.
-xy_points = ee.FeatureCollection(XY_POINTS_ASSET)
+if EXTRACT_XY_POINTS:
+    # 5.1 Load XY points.
+    xy_points = ee.FeatureCollection(XY_POINTS_ASSET)
 
-# 5.2 Diagnostic: inspect the batch column to confirm type
-# and value range. If distinct batch values print as
-# strings (e.g. '1', '2', ...) instead of numbers, the
-# column is stored as character and the Filter.eq calls
-# below need to pass strings, e.g.
-#   ee.Filter.eq('batch', ee.Number(b).format())
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("Batch diagnostics"):
-        print("Total points:", xy_points.size().getInfo())
-        print(
-            "First feature properties:",
-            xy_points.first().getInfo(),
+    # 5.2 Diagnostic: inspect the batch column to confirm type
+    # and value range. If distinct batch values print as
+    # strings (e.g. '1', '2', ...) instead of numbers, the
+    # column is stored as character and the Filter.eq calls
+    # below need to pass strings, e.g.
+    #   ee.Filter.eq('batch', ee.Number(b).format())
+    if PRINT_STATS or COMPUTE_REPORT:
+        with report.section("Batch diagnostics"):
+            print("Total points:", xy_points.size().getInfo())
+            print(
+                "First feature properties:",
+                xy_points.first().getInfo(),
+            )
+            print(
+                "Distinct batch values:",
+                xy_points.aggregate_array("batch")
+                .distinct()
+                .sort()
+                .getInfo(),
+            )
+
+    # 5.3 Launch one export task per batch. Loop runs
+    # 1..N_BATCHES (inclusive) to match the 1-indexed batch
+    # values assigned in R.
+    for b in range(1, N_BATCHES + 1):
+        batch_pts = xy_points.filter(ee.Filter.eq("batch", b))
+        extracted = soilgrids.sampleRegions(
+            collection=batch_pts,
+            scale=EXTRACT_SCALE,
+            tileScale=TILE_SCALE,
+            geometries=False,
         )
-        print(
-            "Distinct batch values:",
-            xy_points.aggregate_array("batch")
-            .distinct()
-            .sort()
-            .getInfo(),
+        # Zero-pad batch number to 2 digits for tidy filenames.
+        batch_str = str(b).zfill(2)
+        task = ee.batch.Export.table.toDrive(
+            collection=extracted,
+            description="soilgrids_xy_batch" + batch_str,
+            folder=DRIVE_FOLDER,
+            fileNamePrefix="soilgrids_xy_batch" + batch_str,
+            fileFormat="CSV",
         )
-
-# 5.3 Launch one export task per batch. Loop runs
-# 1..N_BATCHES (inclusive) to match the 1-indexed batch
-# values assigned in R.
-for b in range(1, N_BATCHES + 1):
-    batch_pts = xy_points.filter(ee.Filter.eq("batch", b))
-    extracted = soilgrids.sampleRegions(
-        collection=batch_pts,
-        scale=EXTRACT_SCALE,
-        tileScale=TILE_SCALE,
-        geometries=False,
-    )
-    # Zero-pad batch number to 2 digits for tidy filenames.
-    batch_str = str(b).zfill(2)
-    task = ee.batch.Export.table.toDrive(
-        collection=extracted,
-        description="soilgrids_xy_batch" + batch_str,
-        folder=DRIVE_FOLDER,
-        fileNamePrefix="soilgrids_xy_batch" + batch_str,
-        fileFormat="CSV",
-    )
-    task.start()
-    print(
-        "Started export task:",
-        task.config["description"],
-    )
+        task.start()
+        print(
+            "Started export task:",
+            task.config["description"],
+        )
 
 # 6. Export raster output (Alberta only) ----
 # Clip to the AOI, then export at the target chosen by
