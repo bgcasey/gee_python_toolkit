@@ -170,7 +170,7 @@ TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
 PRINT_STATS = False  # min/max check (slow for large AOIs)
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 
 # 1.2 Initialize Earth Engine ----
