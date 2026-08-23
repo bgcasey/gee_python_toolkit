@@ -10,10 +10,10 @@
 #   - AB2020 provincial boundary (EE asset)
 #   - XY points asset (may include locations outside AB)
 # outputs:
-#   - Multiband HiHydroSoil images clipped to Alberta,
-#     exported at native (~250 m) and on the ABMI 1 km
-#     reference grid (EPSG:3400, aligned to stack with the
-#     FABDEM 1 km layers).
+#   - Multiband HiHydroSoil raster clipped to Alberta, at
+#     native (~250 m) or on the ABMI 1 km reference grid, per
+#     EXPORT_TARGET. COMBINE_OUTPUTS puts the continuous and
+#     categorical bands in one file (default) or two.
 #   - Per-batch CSVs of point-level extracted values
 #     (optional, gated by EXTRACT_XY_POINTS).
 # notes:
@@ -25,17 +25,22 @@
 #   and Hydrologic Soil Group (HSG) layers are
 #   categorical and are exported without rescaling.
 #
-#   Most assets are ImageCollections representing the six
-#   standard soil depths. They are collapsed to a
-#   multiband image using .toBands(), producing band
-#   names of the form <index>_<asset>. The
-#   Hydrologic_Soil_Group_250m asset is a single Image.
+#   Most assets are ImageCollections over the six standard
+#   soil depths, collapsed with .toBands() and renamed to
+#   lower-case '<asset>_<depth>' (e.g. 'alpha_0-5cm',
+#   'wcpf4-2_100-200cm'); hyphens are kept, so the single
+#   underscore separates variable from depth.
+#   Hydrologic_Soil_Group_250m is a single Image.
 #
-#   The 1 km exports go through export_to_reference_grid
-#   (utils.gee_utils) so they land on the ABMI reference grid.
-#   Continuous layers aggregate with ee.Reducer.mean();
-#   categorical layers (STC, HSG) use ee.Reducer.mode() to
-#   avoid meaningless averages of class codes.
+#   Everything exports as float32, class codes included:
+#   Earth Engine writes masked pixels of an integer GeoTIFF as
+#   0 with no nodata flag, and 0 is not a valid class, so the
+#   AOI-clip margin would read as real data. Small integers
+#   survive float32 exactly.
+#
+#   Aggregation to 1 km goes through export_to_reference_grid
+#   (utils.gee_utils): mean() for continuous layers, mode() for
+#   categorical (STC, HSG) to avoid averaging class codes.
 #
 #   Citation:
 #   Simons, G.W.H., R. Koster, P. Droogers. 2020.
@@ -63,6 +68,7 @@ from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     export_to_reference_grid,
     initialize_ee,
+    to_reference_grid,
 )
 
 # 1. Setup ----
@@ -71,6 +77,23 @@ from utils.gee_utils import (
 NATIVE_SCALE = 250  # Native resolution (m)
 COARSE_SCALE = 1000  # Aggregated resolution (m)
 CRS = "EPSG:3400"  # AB 10-TM (Forest)
+
+# Raster export target, applied to both stacks. "native" writes
+# the ~250 m images in EPSG:3400; "reference_grid" aggregates
+# them onto the ABMI 1 km grid so they stack with the FABDEM
+# terrain layers.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+# True: continuous and categorical bands share one raster.
+# False: one file per group. Each group still aggregates with
+# its own reducer either way.
+COMBINE_OUTPUTS = True
+
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # Base path for HiHydroSoil v2.0 assets.
 BASE_PATH = "projects/sat-io/open-datasets/HiHydroSoilv2_0/"
@@ -82,10 +105,8 @@ BASE_PATH = "projects/sat-io/open-datasets/HiHydroSoilv2_0/"
 # not listed here are skipped at load time.
 SELECTED_ASSETS = None  # None = keep all assets
 
-# Soil depths available in every HiHydroSoil ImageCollection.
-# Each image is named '<VAR>_<depth>_M_250m' (e.g.
-# 'Ksat_0-5cm_M_250m', 'WCpF2_30-60cm_M_250m'), so the depth
-# token is the only part shared across assets.
+# Soil depths present in every ImageCollection. Images are
+# named '<VAR>_<depth>_M_250m' (e.g. 'Ksat_0-5cm_M_250m').
 DEPTHS = [
     "0-5cm",
     "5-15cm",
@@ -95,13 +116,10 @@ DEPTHS = [
     "100-200cm",
 ]
 
-# Optional depth filter (per-image, ImageCollection assets
-# only). List depth tokens from DEPTHS, e.g. ['0-5cm'] keeps
-# only the surface layer of every selected asset. Filter by
-# depth rather than full system:index: an index like
-# 'Ksat_0-5cm_M_250m' exists in the ksat collection only, so
-# using it would empty every other collection. Set to None
-# (or an empty list) to keep all depths.
+# Optional depth filter: list depth tokens from DEPTHS, e.g.
+# ['0-5cm']. None/empty keeps all depths. Use depth tokens, not
+# full system:index values - an index like 'Ksat_0-5cm_M_250m'
+# exists only in the ksat collection and would empty the rest.
 DEPTH_FILTER = None
 
 unknown_depths = [d for d in (DEPTH_FILTER or []) if d not in DEPTHS]
@@ -213,27 +231,19 @@ else:
 def collection_to_image(asset_name, depth_filter):
     """Load a collection and collapse it to a multiband image.
 
-    Optionally keeps only the requested soil depths,
-    collapses to a multiband image via toBands(), and
-    assigns clean band names. The image is NOT clipped to
-    AOI here; clipping is applied later only for raster
-    exports so XY extraction still gets values outside
+    Not clipped to AOI here; clipping happens later for raster
+    exports only, so XY extraction still gets values outside
     Alberta.
 
-    Depths are matched on the '_<depth>_' token inside
-    system:index, which is the only naming component shared
-    across assets ('ALFA_0-5cm_M_250m', 'Ksat_0-5cm_M_250m',
-    ...). Matching whole indices instead would leave every
-    collection but one empty.
+    Depths are matched on the '_<depth>_' token in
+    system:index, the only naming component shared across
+    assets ('ALFA_0-5cm_M_250m', 'Ksat_0-5cm_M_250m', ...).
 
-    Band naming rules:
-      - With a filter, each band is renamed to the
-        system:index of its source image.
-      - Without a filter, bands are renamed to
-        '<asset_name>_<system:index>' to disambiguate
-        across multiple assets.
-    The trailing '_b1' that toBands() inserts for
-    single-band images is stripped in both cases.
+    Bands are renamed '<asset_name>_<depth>' in lower case
+    (e.g. 'alpha_0-5cm', 'wcpf4-2_100-200cm'), dropping the
+    index's variable token, its '_M_250m' suffix and the '_b1'
+    that toBands() adds for single-band images. Hyphens are
+    kept, so the one underscore separates variable from depth.
 
     Args:
         asset_name (str): Short asset name (e.g. 'ksat').
@@ -245,8 +255,7 @@ def collection_to_image(asset_name, depth_filter):
         ee.Image: Multiband image (global extent).
     """
     ic = ee.ImageCollection(BASE_PATH + asset_name)
-    has_filter = bool(depth_filter)
-    if has_filter:
+    if depth_filter:
         depth_filters = [
             ee.Filter.stringContains(
                 "system:index", "_" + d + "_"
@@ -257,13 +266,20 @@ def collection_to_image(asset_name, depth_filter):
     # toBands() creates bands '<system:index>_<origBand>'.
     img = ic.toBands()
 
-    # Strip trailing '_b1' from single-band source images,
-    # then optionally prefix with the asset name.
+    # Only the case is normalised ('N' -> 'n'); hyphens are
+    # meaningful ('wcpf4-2' = pF 4.2, '0-5cm' = 0 to 5 cm).
+    prefix = asset_name.lower()
+
     def rename_band(bn):
-        stripped = ee.String(bn).replace("_b1$", "")
-        if has_filter:
-            return stripped  # system:index already clean
-        return ee.String(asset_name).cat("_").cat(stripped)
+        """'ALFA_0-5cm_M_250m_b1' -> 'alpha_0-5cm'."""
+        depth = (
+            ee.String(bn)
+            .replace("_b1$", "")       # toBands single-band tag
+            .replace("^[^_]+_", "")    # provider variable token
+            .replace("_M_250m$", "")   # constant suffix
+            .toLowerCase()
+        )
+        return ee.String(prefix + "_").cat(depth)
 
     band_names = img.bandNames().map(rename_band)
     return img.rename(band_names)
@@ -368,24 +384,29 @@ if PRINT_STATS or COMPUTE_REPORT:
             ids = ic.aggregate_array("system:index").getInfo()
             print(name + " system:index values:", ids)
 
-    # 4.2 Print min/max for all continuous bands.
+    # 4.2 Print min/max for all continuous bands. One
+    # reduceRegion over the whole stack, not one per band: many
+    # separate getInfo calls are slow and can trip the EECU
+    # profiler. minMax returns '<band>_min' / '<band>_max' keys.
     if has_continuous:
         with report.section("Continuous band min/max"):
             bands = hihydro_continuous.bandNames().getInfo()
+            stats = hihydro_continuous.reduceRegion(
+                reducer=ee.Reducer.minMax(),
+                geometry=aoi,
+                scale=1000,
+                maxPixels=1e13,
+                bestEffort=True,
+                tileScale=4,
+            ).getInfo()
             for band in bands:
-                stats = (
-                    hihydro_continuous.select(band)
-                    .reduceRegion(
-                        reducer=ee.Reducer.minMax(),
-                        geometry=aoi,
-                        scale=1000,
-                        maxPixels=1e13,
-                        bestEffort=True,
-                        tileScale=4,
-                    )
-                    .getInfo()
+                print(
+                    band + " Min and Max:",
+                    {
+                        "min": stats.get(band + "_min"),
+                        "max": stats.get(band + "_max"),
+                    },
                 )
-                print(band + " Min and Max:", stats)
 
     # 4.3 Confirm the native projection of a sample asset.
     with report.section("Projection check"):
@@ -476,10 +497,8 @@ if EXTRACT_XY_POINTS and hihydro_combined is not None:
         )
 
 # 6. Clip to the AOI (Alberta only) ----
-# Each group is clipped to Alberta once. The clipped image is
-# exported at native resolution and also feeds the 1 km
-# aggregation in section 7 (done by export_to_reference_grid,
-# so no manual reduceResolution / reproject is needed here).
+# Each group is clipped once; section 7 exports the result
+# directly or feeds it to the 1 km aggregation.
 
 hihydro_continuous_ab = None
 hihydro_categorical_ab = None
@@ -490,71 +509,133 @@ if has_categorical:
     hihydro_categorical_ab = hihydro_categorical.clip(aoi)
 
 # 7. Export raster outputs ----
-# Native-resolution images plus 1 km images aggregated onto
-# the ABMI reference grid via export_to_reference_grid, so the
-# 1 km outputs share the exact lattice with the FABDEM 1 km
-# layers. Continuous layers aggregate by area mean; categorical
-# layers by modal class. setDefaultProjection pins the native
-# base so reduceResolution knows the input resolution before
-# aggregating. Either group is skipped if no assets passed the
-# filter. These are large exports; monitor the Tasks tab.
+# EXPORT_TARGET picks the resolution, COMBINE_OUTPUTS picks one
+# file or two. A group is skipped if no assets passed the filter.
+#
+# Continuous bands aggregate to 1 km by area mean, categorical
+# by modal class. reduceResolution takes one reducer per call,
+# so the combined path reduces each group separately and stacks
+# the results. setDefaultProjection pins the native base so
+# reduceResolution knows the input resolution. These are large
+# exports; monitor the Tasks tab.
+#
+# Class codes export as float32 like everything else: Earth
+# Engine writes masked pixels of an integer GeoTIFF as 0 with no
+# nodata flag, and 0 is not a valid STC (1-6) or HSG class.
+# formatOptions={"noData": ...} does not help - Earth Engine
+# accepts it on a Drive export and ignores it. The
+# reference-grid helpers already cast, so only the native
+# exports call toFloat() explicitly.
 
-if has_continuous:
-    # 7.1 Continuous - native resolution (~250 m).
+
+def export_native(image, description, file_name_prefix):
+    """Export an image at NATIVE_SCALE in the grid CRS."""
     ee.batch.Export.image.toDrive(
-        image=hihydro_continuous_ab,
-        description="HiHydroSoil_Continuous_AB_250m",
+        image=image.toFloat(),
+        description=description,
         folder=DRIVE_FOLDER,
-        fileNamePrefix="hihydrosoil_continuous_ab_250m",
+        fileNamePrefix=file_name_prefix,
         region=aoi,
         scale=NATIVE_SCALE,
         crs=CRS,
         maxPixels=1e13,
     ).start()
+    print("Started export task:", description)
 
-    # 7.2 Continuous - 1 km on the ABMI reference grid (mean).
-    export_to_reference_grid(
-        image=hihydro_continuous_ab.setDefaultProjection(
-            crs=CRS, scale=NATIVE_SCALE
-        ),
-        aoi=aoi,
-        description="HiHydroSoil_Continuous_AB_1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="hihydrosoil_continuous_ab_1km",
-        aggregate=True,
-        reducer=ee.Reducer.mean(),
-        wait=False,
-    )
 
-if has_categorical:
-    # 7.3 Categorical - native resolution (~250 m).
-    ee.batch.Export.image.toDrive(
-        image=hihydro_categorical_ab,
-        description="HiHydroSoil_Categorical_AB_250m",
-        folder=DRIVE_FOLDER,
-        fileNamePrefix="hihydrosoil_categorical_ab_250m",
-        region=aoi,
-        scale=NATIVE_SCALE,
-        crs=CRS,
-        maxPixels=1e13,
-    ).start()
+def on_native_base(image):
+    """Pin an image to the native base for reduceResolution."""
+    return image.setDefaultProjection(crs=CRS, scale=NATIVE_SCALE)
 
-    # 7.4 Categorical - 1 km on the ABMI reference grid (mode).
-    # Note: export_to_reference_grid casts to float32 (masked
-    # pixels export as NaN/NA); class codes are integer-valued
-    # floats rather than the native int16.
-    export_to_reference_grid(
-        image=hihydro_categorical_ab.setDefaultProjection(
-            crs=CRS, scale=NATIVE_SCALE
-        ),
-        aoi=aoi,
-        description="HiHydroSoil_Categorical_AB_1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="hihydrosoil_categorical_ab_1km",
-        aggregate=True,
-        reducer=ee.Reducer.mode(),
-        wait=False,
-    )
+
+if COMBINE_OUTPUTS:
+    # 7.1 One file with every band.
+    if EXPORT_TARGET == "native":
+        # No aggregation, so the stacks just concatenate.
+        combined_ab = hihydro_continuous_ab
+        if combined_ab is None:
+            combined_ab = hihydro_categorical_ab
+        elif hihydro_categorical_ab is not None:
+            combined_ab = combined_ab.addBands(
+                hihydro_categorical_ab
+            )
+        export_native(
+            combined_ab,
+            "HiHydroSoil_AB_250m",
+            "hihydrosoil_ab_250m",
+        )
+    else:
+        # Reduce each group with its own reducer, then stack;
+        # both are on the grid already, hence aggregate=False.
+        parts = []
+        if has_continuous:
+            parts.append(
+                to_reference_grid(
+                    on_native_base(hihydro_continuous_ab),
+                    aoi,
+                    ee.Reducer.mean(),
+                )
+            )
+        if has_categorical:
+            parts.append(
+                to_reference_grid(
+                    on_native_base(hihydro_categorical_ab),
+                    aoi,
+                    ee.Reducer.mode(),
+                )
+            )
+        combined_1km = parts[0]
+        for part in parts[1:]:
+            combined_1km = combined_1km.addBands(part)
+        export_to_reference_grid(
+            image=combined_1km,
+            aoi=aoi,
+            description="HiHydroSoil_AB_1km",
+            folder=DRIVE_FOLDER,
+            file_name_prefix="hihydrosoil_ab_1km",
+            aggregate=False,
+            wait=False,
+        )
+
+elif EXPORT_TARGET == "native":
+    # 7.2 Separate files, native resolution (~250 m).
+    if has_continuous:
+        export_native(
+            hihydro_continuous_ab,
+            "HiHydroSoil_Continuous_AB_250m",
+            "hihydrosoil_continuous_ab_250m",
+        )
+    if has_categorical:
+        export_native(
+            hihydro_categorical_ab,
+            "HiHydroSoil_Categorical_AB_250m",
+            "hihydrosoil_categorical_ab_250m",
+        )
+
+else:
+    # 7.3 Separate files, 1 km on the ABMI reference grid.
+    if has_continuous:
+        export_to_reference_grid(
+            image=on_native_base(hihydro_continuous_ab),
+            aoi=aoi,
+            description="HiHydroSoil_Continuous_AB_1km",
+            folder=DRIVE_FOLDER,
+            file_name_prefix="hihydrosoil_continuous_ab_1km",
+            aggregate=True,
+            reducer=ee.Reducer.mean(),
+            wait=False,
+        )
+    if has_categorical:
+        export_to_reference_grid(
+            image=on_native_base(hihydro_categorical_ab),
+            aoi=aoi,
+            description="HiHydroSoil_Categorical_AB_1km",
+            folder=DRIVE_FOLDER,
+            file_name_prefix="hihydrosoil_categorical_ab_1km",
+            aggregate=True,
+            reducer=ee.Reducer.mode(),
+            wait=False,
+        )
 
 # 8. Compute usage report ----
 # Multiple export tasks are launched above, so this does
