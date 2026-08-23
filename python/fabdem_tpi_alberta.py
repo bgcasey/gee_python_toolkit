@@ -247,10 +247,10 @@ for radius in TPI_RADII:
         # is intentionally not passed.
         task = export_image_to_drive(
             image=tpi_1km,
-            description=f"FABDEM_TPI_Alberta_1km_r{radius}",
+            description=f"FABDEM_TPI_Alberta_r{radius}_abmi1km",
             region=aoi,
             folder=DRIVE_FOLDER,
-            file_name_prefix=f"fabdem_tpi_alberta_1km_r{radius}",
+            file_name_prefix=f"fabdem_tpi_alberta_r{radius}_abmi1km",
             crs=GRID_CRS,
             crs_transform=GRID_CRS_TRANSFORM,
             max_pixels=1e13,
@@ -268,12 +268,12 @@ for radius in TPI_RADII:
                 tpi.toFloat().clip(aoi).rename(f"tpi_{radius}")
             ),
             description=(
-                f"FABDEM_TPI_Alberta_{FOCAL_BASE_M}m_r{radius}"
+                f"FABDEM_TPI_Alberta_r{radius}_native"
             ),
             region=aoi,
             folder=DRIVE_FOLDER,
             file_name_prefix=(
-                f"fabdem_tpi_alberta_{FOCAL_BASE_M}m_r{radius}"
+                f"fabdem_tpi_alberta_r{radius}_native"
             ),
             scale=FOCAL_BASE_M,
             crs=GRID_CRS,

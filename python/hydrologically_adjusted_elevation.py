@@ -125,19 +125,19 @@ if EXPORT_TARGET == "reference_grid":
             crs=EXPORT_CRS, scale=EXPORT_SCALE
         ),
         aoi=aoi,
-        description="HAND_AB_1km",
+        description="HAND_AB_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="hydrologically_adjusted_elevations_1km",
+        file_name_prefix="hydrologically_adjusted_elevations_abmi1km",
         aggregate=True,
         wait=False,
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
         image=hand,
-        description="HAND_Export",
+        description="HAND_AB_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix="hydrologically_adjusted_elevations",
+        file_name_prefix="hydrologically_adjusted_elevations_native",
         scale=EXPORT_SCALE,
         crs=EXPORT_CRS,
         max_pixels=1e13,

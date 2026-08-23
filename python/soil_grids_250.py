@@ -365,19 +365,19 @@ if EXPORT_TARGET == "reference_grid":
     export_to_reference_grid(
         image=soilgrids_base,
         aoi=aoi,
-        description="SoilGrids_AB_1km",
+        description="SoilGrids_AB_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="soilgrids_ab_1km",
+        file_name_prefix="soilgrids_ab_abmi1km",
         aggregate=True,
         wait=False,
     )
 elif EXPORT_TARGET == "native":
     export_image_to_drive(
         image=soilgrids_ab,
-        description="SoilGrids_AB_250m",
+        description="SoilGrids_AB_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix="soilgrids_ab_250m",
+        file_name_prefix="soilgrids_ab_native",
         scale=NATIVE_SCALE,
         crs=CRS,
         max_pixels=1e13,

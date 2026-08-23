@@ -183,7 +183,7 @@ if EXPORT_TARGET == "reference_grid":
     export_collection_to_reference_grid(
         s2,
         aoi,
-        lambda img: sentinel_file_name(img) + "_1km",
+        lambda img: sentinel_file_name(img) + "_abmi1km",
         folder=DRIVE_FOLDER,
         reducer=ee.Reducer.mean(),
         agg_base_m=AGG_BASE_M,
@@ -195,7 +195,7 @@ elif EXPORT_TARGET == "native":
         DRIVE_FOLDER,
         EXPORT_SCALE,
         EXPORT_CRS,
-        sentinel_file_name,
+        lambda img: sentinel_file_name(img) + "_native",
     )
 else:
     raise ValueError(

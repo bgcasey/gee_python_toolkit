@@ -561,8 +561,8 @@ if COMBINE_OUTPUTS:
             )
         export_native(
             combined_ab,
-            "HiHydroSoil_AB_250m",
-            "hihydrosoil_ab_250m",
+            "HiHydroSoil_AB_native",
+            "hihydrosoil_ab_native",
         )
     else:
         # Reduce each group with its own reducer, then stack;
@@ -590,9 +590,9 @@ if COMBINE_OUTPUTS:
         export_to_reference_grid(
             image=combined_1km,
             aoi=aoi,
-            description="HiHydroSoil_AB_1km",
+            description="HiHydroSoil_AB_abmi1km",
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_ab_1km",
+            file_name_prefix="hihydrosoil_ab_abmi1km",
             aggregate=False,
             wait=False,
         )
@@ -602,14 +602,14 @@ elif EXPORT_TARGET == "native":
     if has_continuous:
         export_native(
             hihydro_continuous_ab,
-            "HiHydroSoil_Continuous_AB_250m",
-            "hihydrosoil_continuous_ab_250m",
+            "HiHydroSoil_Continuous_AB_native",
+            "hihydrosoil_continuous_ab_native",
         )
     if has_categorical:
         export_native(
             hihydro_categorical_ab,
-            "HiHydroSoil_Categorical_AB_250m",
-            "hihydrosoil_categorical_ab_250m",
+            "HiHydroSoil_Categorical_AB_native",
+            "hihydrosoil_categorical_ab_native",
         )
 
 else:
@@ -618,9 +618,9 @@ else:
         export_to_reference_grid(
             image=on_native_base(hihydro_continuous_ab),
             aoi=aoi,
-            description="HiHydroSoil_Continuous_AB_1km",
+            description="HiHydroSoil_Continuous_AB_abmi1km",
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_continuous_ab_1km",
+            file_name_prefix="hihydrosoil_continuous_ab_abmi1km",
             aggregate=True,
             reducer=ee.Reducer.mean(),
             wait=False,
@@ -629,9 +629,9 @@ else:
         export_to_reference_grid(
             image=on_native_base(hihydro_categorical_ab),
             aoi=aoi,
-            description="HiHydroSoil_Categorical_AB_1km",
+            description="HiHydroSoil_Categorical_AB_abmi1km",
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_categorical_ab_1km",
+            file_name_prefix="hihydrosoil_categorical_ab_abmi1km",
             aggregate=True,
             reducer=ee.Reducer.mode(),
             wait=False,

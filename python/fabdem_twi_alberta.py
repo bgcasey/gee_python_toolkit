@@ -150,18 +150,18 @@ if EXPORT_TARGET == "reference_grid":
     task = export_to_reference_grid(
         image=twi,
         aoi=aoi,
-        description="FABDEM_TWI_Alberta_1km",
+        description="FABDEM_TWI_Alberta_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="fabdem_twi_alberta_1km",
+        file_name_prefix="fabdem_twi_alberta_abmi1km",
         wait=False,
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
         image=twi,
-        description=f"FABDEM_TWI_Alberta_{FOCAL_BASE_M}m",
+        description="FABDEM_TWI_Alberta_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_twi_alberta_{FOCAL_BASE_M}m",
+        file_name_prefix="fabdem_twi_alberta_native",
         scale=FOCAL_BASE_M,
         crs=GRID_CRS,
         max_pixels=1e13,

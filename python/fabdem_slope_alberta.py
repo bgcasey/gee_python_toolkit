@@ -116,18 +116,18 @@ if EXPORT_TARGET == "reference_grid":
     task = export_to_reference_grid(
         image=slope,
         aoi=aoi,
-        description="FABDEM_Slope_Alberta_1km",
+        description="FABDEM_Slope_Alberta_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="fabdem_slope_alberta_1km",
+        file_name_prefix="fabdem_slope_alberta_abmi1km",
         wait=False,
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
         image=slope,
-        description=f"FABDEM_Slope_Alberta_{FOCAL_BASE_M}m",
+        description="FABDEM_Slope_Alberta_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_slope_alberta_{FOCAL_BASE_M}m",
+        file_name_prefix="fabdem_slope_alberta_native",
         scale=FOCAL_BASE_M,
         crs=GRID_CRS,
         max_pixels=1e13,

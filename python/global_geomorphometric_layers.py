@@ -188,19 +188,19 @@ if EXPORT_TARGET == "reference_grid":
     task = export_to_reference_grid(
         image=geomorpho90m_grid,
         aoi=aoi,
-        description="Geomorpho90m_AB_1km",
+        description="Geomorpho90m_AB_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="global_geomorphometric_layers_1km",
+        file_name_prefix="global_geomorphometric_layers_abmi1km",
         aggregate=True,
         wait=False,
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
         image=geomorpho90m,
-        description="Geomorpho90m_Export",
+        description="Geomorpho90m_AB_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix="global_geomorphometric_layers",
+        file_name_prefix="global_geomorphometric_layers_native",
         scale=EXPORT_SCALE,
         crs=EXPORT_CRS,
         max_pixels=1e13,

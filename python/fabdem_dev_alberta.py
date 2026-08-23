@@ -180,21 +180,21 @@ for radius in DEV_RADII:
         task = export_to_reference_grid(
             image=dev,
             aoi=aoi,
-            description=f"FABDEM_DEV_Alberta_1km_r{radius}",
+            description=f"FABDEM_DEV_Alberta_r{radius}_abmi1km",
             folder=DRIVE_FOLDER,
-            file_name_prefix=f"fabdem_dev_alberta_1km_r{radius}",
+            file_name_prefix=f"fabdem_dev_alberta_r{radius}_abmi1km",
             wait=False,
         )
     else:
         task = export_image_to_drive(
             image=dev.clip(aoi),
             description=(
-                f"FABDEM_DEV_Alberta_{FOCAL_BASE_M}m_r{radius}"
+                f"FABDEM_DEV_Alberta_r{radius}_native"
             ),
             region=aoi,
             folder=DRIVE_FOLDER,
             file_name_prefix=(
-                f"fabdem_dev_alberta_{FOCAL_BASE_M}m_r{radius}"
+                f"fabdem_dev_alberta_r{radius}_native"
             ),
             scale=FOCAL_BASE_M,
             crs=GRID_CRS,

@@ -189,19 +189,19 @@ if EXPORT_TARGET == "reference_grid":
     task = export_to_reference_grid(
         image=tri_export,
         aoi=aoi,
-        description="FABDEM_TRI_Alberta_1km",
+        description="FABDEM_TRI_Alberta_abmi1km",
         folder=DRIVE_FOLDER,
-        file_name_prefix="fabdem_tri_alberta_1km",
+        file_name_prefix="fabdem_tri_alberta_abmi1km",
         aggregate=False,
         wait=False,
     )
 else:
     task = export_image_to_drive(
         image=tri_export,
-        description=f"FABDEM_TRI_Alberta_{FOCAL_BASE_M}m",
+        description="FABDEM_TRI_Alberta_native",
         region=aoi,
         folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_tri_alberta_{FOCAL_BASE_M}m",
+        file_name_prefix="fabdem_tri_alberta_native",
         scale=FOCAL_BASE_M,
         crs=GRID_CRS,
         max_pixels=1e13,
