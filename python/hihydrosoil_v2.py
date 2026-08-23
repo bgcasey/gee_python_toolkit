@@ -14,7 +14,8 @@
 #     exported at native (~250 m) and on the ABMI 1 km
 #     reference grid (EPSG:3400, aligned to stack with the
 #     FABDEM 1 km layers).
-#   - Per-batch CSVs of point-level extracted values.
+#   - Per-batch CSVs of point-level extracted values
+#     (optional, gated by EXTRACT_XY_POINTS).
 # notes:
 #   HiHydroSoil v2.0 provides global soil hydraulic
 #   properties at 250 m, derived from SoilGrids250m v2.0
@@ -79,16 +80,36 @@ BASE_PATH = "projects/sat-io/open-datasets/HiHydroSoilv2_0/"
 # names from CONTINUOUS_COLLECTIONS and/or
 # CATEGORICAL_COLLECTIONS (e.g. ['ksat'], ['stc']). Assets
 # not listed here are skipped at load time.
-SELECTED_ASSETS = ["ksat"]
+SELECTED_ASSETS = None  # None = keep all assets
+
+# Soil depths available in every HiHydroSoil ImageCollection.
+# Each image is named '<VAR>_<depth>_M_250m' (e.g.
+# 'Ksat_0-5cm_M_250m', 'WCpF2_30-60cm_M_250m'), so the depth
+# token is the only part shared across assets.
+DEPTHS = [
+    "0-5cm",
+    "5-15cm",
+    "15-30cm",
+    "30-60cm",
+    "60-100cm",
+    "100-200cm",
+]
 
 # Optional depth filter (per-image, ImageCollection assets
-# only). HiHydroSoil collections contain one image per
-# soil depth (plus aggregated topsoil/subsoil layers). The
-# exact system:index per image is provider-specific. The
-# stats section prints available system:index values for
-# every selected asset so you can copy the correct strings
-# here on a follow-up run. Set to None to keep all images.
-DEPTH_FILTER = ["Ksat_0-5cm_M_250m"]
+# only). List depth tokens from DEPTHS, e.g. ['0-5cm'] keeps
+# only the surface layer of every selected asset. Filter by
+# depth rather than full system:index: an index like
+# 'Ksat_0-5cm_M_250m' exists in the ksat collection only, so
+# using it would empty every other collection. Set to None
+# (or an empty list) to keep all depths.
+DEPTH_FILTER = None
+
+unknown_depths = [d for d in (DEPTH_FILTER or []) if d not in DEPTHS]
+if unknown_depths:
+    raise ValueError(
+        f"Unknown DEPTH_FILTER value(s): {unknown_depths}. "
+        f"Valid depths are {DEPTHS}."
+    )
 
 # Continuous (float) ImageCollection assets. Rescaled by
 # multiplying with 0.0001.
@@ -114,6 +135,11 @@ CATEGORICAL_COLLECTIONS = [
     "stc",  # Soil Texture Class (1-6)
 ]
 
+# Point extraction (section 5). Set EXTRACT_XY_POINTS = False to
+# skip the batched XY point-value extraction and its per-batch
+# CSV exports (e.g. when you only need the raster outputs).
+EXTRACT_XY_POINTS = False  # True: extract HiHydroSoil values to XY points
+
 # XY points asset. Must contain a 'batch' property with
 # integer values matching the loop range below (N_BATCHES).
 XY_POINTS_ASSET = (
@@ -125,7 +151,7 @@ EXTRACT_SCALE = NATIVE_SCALE  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
-PRINT_STATS = True  # min/max check (slow for large AOIs)
+PRINT_STATS = False  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 
@@ -184,14 +210,21 @@ else:
 # multiband image.
 
 
-def collection_to_image(asset_name, index_filter):
+def collection_to_image(asset_name, depth_filter):
     """Load a collection and collapse it to a multiband image.
 
-    Optionally filters by system:index, collapses to a
-    multiband image via toBands(), and assigns clean band
-    names. The image is NOT clipped to AOI here; clipping
-    is applied later only for raster exports so XY
-    extraction still gets values outside Alberta.
+    Optionally keeps only the requested soil depths,
+    collapses to a multiband image via toBands(), and
+    assigns clean band names. The image is NOT clipped to
+    AOI here; clipping is applied later only for raster
+    exports so XY extraction still gets values outside
+    Alberta.
+
+    Depths are matched on the '_<depth>_' token inside
+    system:index, which is the only naming component shared
+    across assets ('ALFA_0-5cm_M_250m', 'Ksat_0-5cm_M_250m',
+    ...). Matching whole indices instead would leave every
+    collection but one empty.
 
     Band naming rules:
       - With a filter, each band is renamed to the
@@ -204,18 +237,23 @@ def collection_to_image(asset_name, index_filter):
 
     Args:
         asset_name (str): Short asset name (e.g. 'ksat').
-        index_filter (list or None): system:index strings
-            to keep. If None, all images are kept.
+        depth_filter (list or None): Depth tokens to keep
+            (e.g. ['0-5cm']). If None/empty, all depths are
+            kept.
 
     Returns:
         ee.Image: Multiband image (global extent).
     """
     ic = ee.ImageCollection(BASE_PATH + asset_name)
-    has_filter = bool(index_filter)
+    has_filter = bool(depth_filter)
     if has_filter:
-        ic = ic.filter(
-            ee.Filter.inList("system:index", index_filter)
-        )
+        depth_filters = [
+            ee.Filter.stringContains(
+                "system:index", "_" + d + "_"
+            )
+            for d in depth_filter
+        ]
+        ic = ic.filter(ee.Filter.Or(*depth_filters))
     # toBands() creates bands '<system:index>_<origBand>'.
     img = ic.toBands()
 
@@ -318,8 +356,9 @@ if PRINT_STATS or COMPUTE_REPORT:
             )
 
     # 4.1 Inspect collection contents (system:index).
-    # Use this output to populate DEPTH_FILTER if you want
-    # to keep only specific depth(s).
+    # Confirms the depth tokens embedded in each index; copy
+    # the depth part (e.g. '30-60cm') into DEPTH_FILTER to
+    # keep only specific depth(s).
     with report.section("Inspect system:index values"):
         assets_to_inspect = (
             continuous_collections + categorical_collections
@@ -361,37 +400,39 @@ if PRINT_STATS or COMPUTE_REPORT:
 
 # 5. Extract HiHydroSoil values to XY points (batched) ----
 # Use sampleRegions to extract the pixel value at each XY
-# location. With large point sets a single extraction
-# exceeds GEE's per-tile memory cap, so the points asset is
-# pre-tagged with a 'batch' column (set in R before upload)
-# and this loop launches one export task per batch. Each
-# batch exports a separate CSV named
-# 'hihydrosoil_xy_batchNN'. Merge the CSVs in R afterward.
+# location. With large point sets a single extraction exceeds
+# GEE's per-tile memory cap, so the points asset is pre-tagged
+# with a 'batch' column (set in R before upload) and this loop
+# launches one export task per batch. Each batch exports a
+# separate CSV named 'hihydrosoil_xy_batchNN'. Merge the CSVs
+# in R afterward. The whole section is skipped when
+# EXTRACT_XY_POINTS is False, or when no assets passed the
+# filters in section 2.1 / 3.
 
-# 5.1 Load XY points.
-xy_points = ee.FeatureCollection(XY_POINTS_ASSET)
+if EXTRACT_XY_POINTS and hihydro_combined is not None:
+    # 5.1 Load XY points.
+    xy_points = ee.FeatureCollection(XY_POINTS_ASSET)
 
-# 5.2 Diagnostic: inspect the batch column. If distinct
-# batch values print as strings (e.g. '1', '2', ...)
-# instead of numbers, the column is stored as character
-# and the Filter.eq calls below need to pass strings, e.g.
-#   ee.Filter.eq('batch', ee.Number(b).format())
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("Batch diagnostics"):
-        print("Total points:", xy_points.size().getInfo())
-        print(
-            "First feature properties:",
-            xy_points.first().getInfo(),
-        )
-        print(
-            "Distinct batch values:",
-            xy_points.aggregate_array("batch")
-            .distinct()
-            .sort()
-            .getInfo(),
-        )
-        # First rows of batch 1 for a sanity check.
-        if hihydro_combined is not None:
+    # 5.2 Diagnostic: inspect the batch column. If distinct
+    # batch values print as strings (e.g. '1', '2', ...)
+    # instead of numbers, the column is stored as character
+    # and the Filter.eq calls below need to pass strings, e.g.
+    #   ee.Filter.eq('batch', ee.Number(b).format())
+    if PRINT_STATS or COMPUTE_REPORT:
+        with report.section("Batch diagnostics"):
+            print("Total points:", xy_points.size().getInfo())
+            print(
+                "First feature properties:",
+                xy_points.first().getInfo(),
+            )
+            print(
+                "Distinct batch values:",
+                xy_points.aggregate_array("batch")
+                .distinct()
+                .sort()
+                .getInfo(),
+            )
+            # First rows of batch 1 for a sanity check.
             batch1 = xy_points.filter(
                 ee.Filter.eq("batch", 1)
             )
@@ -406,10 +447,9 @@ if PRINT_STATS or COMPUTE_REPORT:
                 sample.getInfo(),
             )
 
-# 5.3 Launch one export task per batch. Loop runs
-# 1..N_BATCHES (inclusive) to match the 1-indexed batch
-# values assigned in R.
-if hihydro_combined is not None:
+    # 5.3 Launch one export task per batch. Loop runs
+    # 1..N_BATCHES (inclusive) to match the 1-indexed batch
+    # values assigned in R.
     for b in range(1, N_BATCHES + 1):
         batch_pts = xy_points.filter(
             ee.Filter.eq("batch", b)
@@ -430,9 +470,10 @@ if hihydro_combined is not None:
             fileFormat="CSV",
         )
         task.start()
-        print("Started export task:", task.config[
-            "description"
-        ])
+        print(
+            "Started export task:",
+            task.config["description"],
+        )
 
 # 6. Clip to the AOI (Alberta only) ----
 # Each group is clipped to Alberta once. The clipped image is
