@@ -8,8 +8,9 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - TRI GeoTIFF for Alberta, aligned to the ABMI 1 km
-#     reference grid (exported to Google Drive)
+#   - TRI GeoTIFF for Alberta, either aligned to the ABMI
+#     1 km reference grid or at FOCAL_BASE_M resolution,
+#     selected by EXPORT_TARGET (exported to Google Drive)
 # notes:
 #   This script calculates the Terrain Ruggedness Index
 #   (TRI) from the FABDEM bare-earth DEM (30 m, forests and
@@ -61,10 +62,11 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
+    export_image_to_drive,
     export_to_reference_grid,
     fabdem_elevation,
     initialize_ee,
@@ -78,6 +80,12 @@ from utils.gee_utils import (
 # aggregating to 1 km (>= ~50 m for a full-province run).
 FOCAL_BASE_M = 50
 TRI_WINDOW_RADIUS = 1  # pixels; 1 = classic 3x3 Riley window
+# Raster export target. "reference_grid" aggregates TRI (area
+# mean) onto the ABMI 1 km grid so it stacks with the other 1 km
+# covariates. "native" skips the aggregation and exports TRI at
+# FOCAL_BASE_M in the grid CRS, ungridded - useful for
+# inspecting the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
@@ -139,9 +147,22 @@ ssd = (
 )
 tri = ssd.max(0).sqrt().rename("tri")
 
-# Aggregate to the 1 km reference grid (area mean, float32,
-# clipped to Alberta). TRI is continuous metres, so no rounding.
-tri_1km = to_reference_grid(tri, aoi)
+# Build the image EXPORT_TARGET asks for. "reference_grid"
+# aggregates TRI to the 1 km grid (area mean, float32, clipped to
+# Alberta; TRI is continuous metres, so no rounding). "native"
+# keeps TRI at FOCAL_BASE_M and only clips. stats_scale follows
+# so the min/max below is read at the exported resolution.
+if EXPORT_TARGET == "reference_grid":
+    tri_export = to_reference_grid(tri, aoi)
+    stats_scale = 1000
+elif EXPORT_TARGET == "native":
+    tri_export = tri.clip(aoi)
+    stats_scale = FOCAL_BASE_M
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 3.1 Check min and max values (optional) ----
 # Also runs when COMPUTE_REPORT is on: Earth Engine is
@@ -149,29 +170,43 @@ tri_1km = to_reference_grid(tri, aoi)
 # (getInfo) to measure per-algorithm EECU usage.
 if PRINT_STATS or COMPUTE_REPORT:
     with report.section("TRI min/max (reduceRegion)"):
-        stats = tri_1km.reduceRegion(
+        stats = tri_export.reduceRegion(
             reducer=ee.Reducer.minMax(),
             geometry=aoi,
-            scale=1000,
+            scale=stats_scale,
             maxPixels=1e13,
             bestEffort=True,
         ).getInfo()
     print("TRI min and max values:", stats)
 
 # 4. Export data ----
-# Export the already-aggregated 1 km TRI on the grid's exact
-# CRS and transform (aggregate=False -- tri_1km is on the grid
-# already). Set wait=True to block; otherwise monitor progress
+# tri_export was already built for the chosen EXPORT_TARGET
+# above, so this only picks the matching export call. The 1 km
+# path passes aggregate=False because tri_export is on the grid
+# already. Set wait=True to block; otherwise monitor progress
 # at https://code.earthengine.google.com/tasks
-task = export_to_reference_grid(
-    image=tri_1km,
-    aoi=aoi,
-    description="FABDEM_TRI_Alberta_1km",
-    folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_tri_alberta_1km",
-    aggregate=False,
-    wait=False,
-)
+if EXPORT_TARGET == "reference_grid":
+    task = export_to_reference_grid(
+        image=tri_export,
+        aoi=aoi,
+        description="FABDEM_TRI_Alberta_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="fabdem_tri_alberta_1km",
+        aggregate=False,
+        wait=False,
+    )
+else:
+    task = export_image_to_drive(
+        image=tri_export,
+        description=f"FABDEM_TRI_Alberta_{FOCAL_BASE_M}m",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix=f"fabdem_tri_alberta_{FOCAL_BASE_M}m",
+        scale=FOCAL_BASE_M,
+        crs=GRID_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
 
 # 5. Compute usage report ----
 # This section waits for the export to finish, records its

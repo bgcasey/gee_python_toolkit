@@ -8,8 +8,9 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Mean-elevation GeoTIFF for Alberta, aligned to the ABMI
-#     1 km reference grid (exported to Google Drive)
+#   - Mean-elevation GeoTIFF for Alberta, either aligned to the ABMI
+#     1 km reference grid or at FOCAL_BASE_M resolution,
+#     selected by EXPORT_TARGET (exported to Google Drive)
 # notes:
 #   This script produces mean elevation per 1 km cell from the
 #   FABDEM bare-earth DEM (30 m, forests and buildings
@@ -48,10 +49,11 @@ import sys
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
+    export_image_to_drive,
     export_to_reference_grid,
     fabdem_elevation,
     initialize_ee,
@@ -65,6 +67,12 @@ from utils.gee_utils import (
 # base under the reprojection limit works (>= ~50 m for a
 # full-province run); 50 m is the area mean of the native 30 m.
 FOCAL_BASE_M = 50
+# Raster export target. "reference_grid" aggregates elevation (area
+# mean) onto the ABMI 1 km grid so it stacks with the other 1 km
+# covariates. "native" skips the aggregation and exports the
+# image at FOCAL_BASE_M in the grid CRS, ungridded - useful for
+# inspecting the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -96,19 +104,39 @@ aoi, aoi_compute = define_study_area(
 elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
 
 # 4. Aggregate to the grid and export ----
-# export_to_reference_grid aggregates elevation to the 1 km
-# ABMI grid by area mean (mean elevation per cell) and exports
-# it on the grid's exact CRS and transform. Set wait=True to
-# block; otherwise monitor progress at
+# EXPORT_TARGET picks the output. "reference_grid" hands elevation to
+# export_to_reference_grid, which aggregates it to the 1 km ABMI
+# grid by area mean and exports it on the grid's exact CRS and
+# transform. "native" skips the aggregation and writes elevation at
+# FOCAL_BASE_M in the grid CRS instead. Set wait=True to block;
+# otherwise monitor progress at
 # https://code.earthengine.google.com/tasks
-task = export_to_reference_grid(
-    image=elevation.rename("elevation"),
-    aoi=aoi,
-    description="FABDEM_Elevation_Alberta_1km",
-    folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_elevation_alberta_1km",
-    wait=False,
-)
+if EXPORT_TARGET == "reference_grid":
+    task = export_to_reference_grid(
+        image=elevation.rename("elevation"),
+        aoi=aoi,
+        description="FABDEM_Elevation_Alberta_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="fabdem_elevation_alberta_1km",
+        wait=False,
+    )
+elif EXPORT_TARGET == "native":
+    task = export_image_to_drive(
+        image=elevation.rename("elevation"),
+        description=f"FABDEM_Elevation_Alberta_{FOCAL_BASE_M}m",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix=f"fabdem_elevation_alberta_{FOCAL_BASE_M}m",
+        scale=FOCAL_BASE_M,
+        crs=GRID_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 5. Compute usage report ----
 # This section waits for the export to finish, records

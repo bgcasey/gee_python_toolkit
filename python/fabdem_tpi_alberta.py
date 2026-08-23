@@ -8,8 +8,9 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     PROVINCIAL_BOUNDARY_ASSET) for the full-province crop
 # outputs:
-#   - One 1 km TPI GeoTIFF per focal radius for Alberta,
-#     aligned to the ABMI 1 km reference grid
+#   - One TPI GeoTIFF per focal radius for Alberta, either
+#     aligned to the ABMI 1 km reference grid or at
+#     FOCAL_BASE_M resolution, selected by EXPORT_TARGET
 #     (exported to Google Drive)
 # notes:
 #   This script calculates the Topographic Position Index
@@ -97,6 +98,19 @@ PROVINCIAL_BOUNDARY_ASSET = (
     "projects/ee-bgcasey-abmi/assets/AB2020_provincial_boundary"
 )
 TPI_RADII = [250]  # one export per radius
+# Raster export target, applied to every radius.
+# "reference_grid" aggregates TPI (area mean) onto the ABMI 1 km
+# grid so it stacks with the other 1 km covariates. "native"
+# skips the aggregation and exports TPI at FOCAL_BASE_M in the
+# grid CRS, ungridded - useful for inspecting the input to the
+# aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 TPI_WINDOW_SHAPE = "circle"  # "circle" or "square"
 TPI_UNITS = "meters"  # "meters" or "pixels"
 # Compute buffer (metres). The DEM is clipped to the AOI grown
@@ -193,6 +207,9 @@ for radius in TPI_RADII:
         elevation.focalMean(radius, TPI_WINDOW_SHAPE, TPI_UNITS)
     )
 
+    # The "reference_grid" path (EXPORT_TARGET, validated at the
+    # top of the script); the "native" path below skips all of
+    # this and exports tpi at FOCAL_BASE_M instead.
     # Aggregate FOCAL_BASE_M -> 1 km by area mean, pinned to the
     # ABMI grid. reduceResolution averages every focal-base
     # pixel that falls in each 1 km cell; the aggregation lands
@@ -212,32 +229,57 @@ for radius in TPI_RADII:
     # terra read as NA. clip(aoi) crops to the true AOI,
     # discarding the buffer ring used only to keep the focal
     # mean unbiased.
-    tpi_1km = (
-        tpi
-        .reduceResolution(
-            reducer=ee.Reducer.mean(),
-            maxPixels=AGG_MAX_PIXELS,
+    if EXPORT_TARGET == "reference_grid":
+        tpi_1km = (
+            tpi
+            .reduceResolution(
+                reducer=ee.Reducer.mean(),
+                maxPixels=AGG_MAX_PIXELS,
+            )
+            .round()
+            .toFloat()
+            .clip(aoi)
+            .rename(f"tpi_{radius}")
         )
-        .round()
-        .toFloat()
-        .clip(aoi)
-        .rename(f"tpi_{radius}")
-    )
 
-    # 4.1 Export this radius as a 1 km GeoTIFF ----
-    # crs_transform pins pixels to the reference grid; scale is
-    # intentionally not passed.
-    task = export_image_to_drive(
-        image=tpi_1km,
-        description=f"FABDEM_TPI_Alberta_1km_r{radius}",
-        region=aoi,
-        folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_tpi_alberta_1km_r{radius}",
-        crs=GRID_CRS,
-        crs_transform=GRID_CRS_TRANSFORM,
-        max_pixels=1e13,
-        wait=False,
-    )
+        # 4.1 Export this radius as a 1 km GeoTIFF ----
+        # crs_transform pins pixels to the reference grid; scale
+        # is intentionally not passed.
+        task = export_image_to_drive(
+            image=tpi_1km,
+            description=f"FABDEM_TPI_Alberta_1km_r{radius}",
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"fabdem_tpi_alberta_1km_r{radius}",
+            crs=GRID_CRS,
+            crs_transform=GRID_CRS_TRANSFORM,
+            max_pixels=1e13,
+            wait=False,
+        )
+    else:
+        # 4.1 Export this radius at FOCAL_BASE_M ----
+        # No reduceResolution and no round(): this is the raw
+        # input to the aggregation, so it keeps sub-metre TPI
+        # values (the 1 km path rounds only after averaging).
+        # toFloat() for the same nodata reason as above, and
+        # clip(aoi) discards the compute buffer ring.
+        task = export_image_to_drive(
+            image=(
+                tpi.toFloat().clip(aoi).rename(f"tpi_{radius}")
+            ),
+            description=(
+                f"FABDEM_TPI_Alberta_{FOCAL_BASE_M}m_r{radius}"
+            ),
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=(
+                f"fabdem_tpi_alberta_{FOCAL_BASE_M}m_r{radius}"
+            ),
+            scale=FOCAL_BASE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
     tasks.append(task)
 
 # 5. Compute usage report ----

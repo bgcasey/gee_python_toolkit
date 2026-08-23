@@ -8,8 +8,10 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - One DEV GeoTIFF per focal radius for Alberta, aligned to
-#     the ABMI 1 km reference grid (exported to Google Drive)
+#   - One DEV GeoTIFF per focal radius for Alberta, either
+#     aligned to the ABMI 1 km reference grid or at
+#     FOCAL_BASE_M resolution, selected by EXPORT_TARGET
+#     (exported to Google Drive)
 # notes:
 #   This script calculates DEV (deviation from mean
 #   elevation) from the FABDEM bare-earth DEM (30 m, forests
@@ -61,10 +63,11 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
+    export_image_to_drive,
     export_to_reference_grid,
     fabdem_elevation,
     initialize_ee,
@@ -79,6 +82,17 @@ from utils.gee_utils import (
 # resolved).
 FOCAL_BASE_M = 50
 DEV_RADII = [250, 1000, 2000]  # one export per radius
+# Raster export target, applied to every radius. "reference_grid"
+# aggregates DEV (area mean) onto the ABMI 1 km grid so it stacks
+# with the other 1 km covariates. "native" skips the aggregation
+# and exports DEV at FOCAL_BASE_M in the grid CRS, ungridded.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 DEV_WINDOW_SHAPE = "circle"  # "circle" or "square"
 DEV_UNITS = "meters"  # "meters" or "pixels"
 SD_EPSILON = 0.001  # floor for SD_z to avoid divide-by-zero
@@ -158,15 +172,35 @@ for radius in DEV_RADII:
         .rename(f"dev_{radius}")
     )
 
-    # 4.1 Aggregate to the 1 km grid and export ----
-    task = export_to_reference_grid(
-        image=dev,
-        aoi=aoi,
-        description=f"FABDEM_DEV_Alberta_1km_r{radius}",
-        folder=DRIVE_FOLDER,
-        file_name_prefix=f"fabdem_dev_alberta_1km_r{radius}",
-        wait=False,
-    )
+    # 4.1 Export this radius at the chosen EXPORT_TARGET ----
+    # "reference_grid" aggregates DEV to the 1 km grid; "native"
+    # writes it at FOCAL_BASE_M in the grid CRS instead.
+    # EXPORT_TARGET is validated once at the top of the script.
+    if EXPORT_TARGET == "reference_grid":
+        task = export_to_reference_grid(
+            image=dev,
+            aoi=aoi,
+            description=f"FABDEM_DEV_Alberta_1km_r{radius}",
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"fabdem_dev_alberta_1km_r{radius}",
+            wait=False,
+        )
+    else:
+        task = export_image_to_drive(
+            image=dev.clip(aoi),
+            description=(
+                f"FABDEM_DEV_Alberta_{FOCAL_BASE_M}m_r{radius}"
+            ),
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=(
+                f"fabdem_dev_alberta_{FOCAL_BASE_M}m_r{radius}"
+            ),
+            scale=FOCAL_BASE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
     tasks.append(task)
 
 # 5. Compute usage report ----

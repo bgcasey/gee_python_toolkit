@@ -9,8 +9,9 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - TWI GeoTIFF for Alberta, aligned to the ABMI 1 km
-#     reference grid (exported to Google Drive)
+#   - TWI GeoTIFF for Alberta, either aligned to the ABMI 1 km
+#     reference grid or at FOCAL_BASE_M resolution,
+#     selected by EXPORT_TARGET (exported to Google Drive)
 # notes:
 #   This script calculates the Topographic Wetness Index
 #   (TWI) as ln(a / tan(b)), where a is upslope drainage
@@ -59,10 +60,11 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER
+from _gee_config import DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
+    export_image_to_drive,
     export_to_reference_grid,
     fabdem_elevation,
     initialize_ee,
@@ -76,6 +78,12 @@ from utils.gee_utils import (
 # uses a 3x3 neighborhood, so the compute buffer only needs
 # about one base pixel.
 FOCAL_BASE_M = 50
+# Raster export target. "reference_grid" aggregates TWI (area
+# mean) onto the ABMI 1 km grid so it stacks with the other 1 km
+# covariates. "native" skips the aggregation and exports the
+# image at FOCAL_BASE_M in the grid CRS, ungridded - useful for
+# inspecting the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt);
 # blocks until the export task finishes
@@ -131,18 +139,39 @@ tan_b = slope_rad.tan().max(0.001)
 twi = upslope_area.divide(tan_b).log().rename("twi")
 
 # 4. Aggregate to the grid and export ----
-# export_to_reference_grid aggregates TWI to the 1 km ABMI grid
-# by area mean and exports it on the grid's exact CRS and
-# transform. Set wait=True to block; otherwise monitor progress
-# at https://code.earthengine.google.com/tasks
-task = export_to_reference_grid(
-    image=twi,
-    aoi=aoi,
-    description="FABDEM_TWI_Alberta_1km",
-    folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_twi_alberta_1km",
-    wait=False,
-)
+# EXPORT_TARGET picks the output. "reference_grid" hands TWI to
+# export_to_reference_grid, which aggregates it to the 1 km ABMI
+# grid by area mean and exports it on the grid's exact CRS and
+# transform. "native" skips the aggregation and writes TWI at
+# FOCAL_BASE_M in the grid CRS instead. Set wait=True to block;
+# otherwise monitor progress at
+# https://code.earthengine.google.com/tasks
+if EXPORT_TARGET == "reference_grid":
+    task = export_to_reference_grid(
+        image=twi,
+        aoi=aoi,
+        description="FABDEM_TWI_Alberta_1km",
+        folder=DRIVE_FOLDER,
+        file_name_prefix="fabdem_twi_alberta_1km",
+        wait=False,
+    )
+elif EXPORT_TARGET == "native":
+    task = export_image_to_drive(
+        image=twi,
+        description=f"FABDEM_TWI_Alberta_{FOCAL_BASE_M}m",
+        region=aoi,
+        folder=DRIVE_FOLDER,
+        file_name_prefix=f"fabdem_twi_alberta_{FOCAL_BASE_M}m",
+        scale=FOCAL_BASE_M,
+        crs=GRID_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
+else:
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
 # 5. Compute usage report ----
 # This section waits for the export to finish, records
