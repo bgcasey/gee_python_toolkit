@@ -106,6 +106,22 @@ TPI_RADII = [250]  # one export per radius
 # aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+COARSE_SCALE = 1000  # ABMI reference grid cell (m)
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else FOCAL_BASE_M
+)
+BUFFER_MAX_ERROR_M = 100
+
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
@@ -121,8 +137,11 @@ TPI_UNITS = "meters"  # "meters" or "pixels"
 # compute stays bounded to AOI + ring rather than the whole
 # DEM. It must be >= the largest focal reach; focal-base pixels
 # are FOCAL_BASE_M, so "pixels" radii are converted to metres.
-COMPUTE_BUFFER_M = max(TPI_RADII) * (
-    FOCAL_BASE_M if TPI_UNITS == "pixels" else 1
+COMPUTE_BUFFER_M = max(
+    max(TPI_RADII) * (
+        FOCAL_BASE_M if TPI_UNITS == "pixels" else 1
+    ),
+    AGG_BUFFER_M,
 )
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)

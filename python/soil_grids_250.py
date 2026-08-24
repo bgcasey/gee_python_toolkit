@@ -99,6 +99,21 @@ CRS = "EPSG:3400"  # AB 10-TM (Forest)
 # Earth Engine's per-tile reprojection limit.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else NATIVE_SCALE
+)
+BUFFER_MAX_ERROR_M = 100
+
 # Base path for SoilGrids 250m v2.0 assets.
 BASE_PATH = "projects/soilgrids-isric/"
 
@@ -363,7 +378,15 @@ if EXTRACT_XY_POINTS:
 # Native-resolution exports over Alberta are large; monitor the
 # Tasks tab and expect substantial processing time.
 
-soilgrids_ab = soilgrids.clip(aoi)
+# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
+# result is clipped back to the plain aoi downstream.
+clip_geom = (
+    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
+    if AGG_BUFFER_M
+    else aoi
+)
+
+soilgrids_ab = soilgrids.clip(clip_geom)
 
 if EXPORT_TARGET == "reference_grid":
     # setDefaultProjection pins the native base so the
@@ -384,7 +407,7 @@ if EXPORT_TARGET == "reference_grid":
     ))
 elif EXPORT_TARGET == "native":
     export_tasks.append(export_image_to_drive(
-        image=soilgrids_ab,
+        image=soilgrids_ab.clip(aoi),
         description="SoilGrids_AB_native",
         region=aoi,
         folder=DRIVE_FOLDER,

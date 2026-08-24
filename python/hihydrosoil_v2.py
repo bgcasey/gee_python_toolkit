@@ -69,6 +69,21 @@ CRS = "EPSG:3400"  # AB 10-TM (Forest)
 # them onto the ABMI 1 km grid.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else NATIVE_SCALE
+)
+BUFFER_MAX_ERROR_M = 100
+
 # True: continuous and categorical bands share one raster.
 # False: one file per group. Each group still aggregates with
 # its own reducer either way.
@@ -154,7 +169,7 @@ EXTRACT_SCALE = NATIVE_SCALE  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
-PRINT_STATS = False  # min/max check (slow for large AOIs)
+PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Block until every export task finishes so its batch
@@ -162,7 +177,7 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # export runtime (hours for a province-wide run), so keep it
 # False for production runs and turn it on when profiling a
 # test AOI.
-WAIT_FOR_EXPORTS = False
+WAIT_FOR_EXPORTS = True
 
 # Export tasks started below, for the optional per-task EECU
 # logging in the compute-report section at the end.
@@ -495,14 +510,31 @@ if EXTRACT_XY_POINTS and hihydro_combined is not None:
 # 6. Clip to the AOI (Alberta only) ----
 # Each group is clipped once; section 7 exports the result
 # directly or feeds it to the 1 km aggregation.
+#
+# The 1 km path clips to a BUFFERED aoi. Clipping at 250 m masks
+# the pixels outside Alberta, and reduceResolution then averages
+# only the unmasked ones, so a 1 km cell straddling the boundary
+# would summarise just its covered part. Aggregating from the
+# buffered image gives every such cell a full 1 km of input.
+# to_reference_grid / export_to_reference_grid clip the
+# aggregated result back to the unbuffered aoi, so the buffer
+# never reaches the output - but boundary cells do now include
+# values from outside Alberta, which is the point.
+# The native path aggregates nothing, so it clips to aoi directly.
+
+clip_geom = (
+    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
+    if AGG_BUFFER_M
+    else aoi
+)
 
 hihydro_continuous_ab = None
 hihydro_categorical_ab = None
 
 if has_continuous:
-    hihydro_continuous_ab = hihydro_continuous.clip(aoi)
+    hihydro_continuous_ab = hihydro_continuous.clip(clip_geom)
 if has_categorical:
-    hihydro_categorical_ab = hihydro_categorical.clip(aoi)
+    hihydro_categorical_ab = hihydro_categorical.clip(clip_geom)
 
 # 7. Export raster outputs ----
 # EXPORT_TARGET picks the resolution, COMBINE_OUTPUTS picks one
@@ -518,7 +550,7 @@ if has_categorical:
 def export_native(image, description, file_name_prefix):
     """Export an image at NATIVE_SCALE in the grid CRS."""
     task = ee.batch.Export.image.toDrive(
-        image=image.toFloat(),
+        image=image.clip(aoi).toFloat(),
         description=description,
         folder=DRIVE_FOLDER,
         fileNamePrefix=file_name_prefix,

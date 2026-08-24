@@ -60,6 +60,22 @@ EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
 # is a stored (pyramided) dataset, so 90 m -> 1 km is well under
 # Earth Engine's per-tile reprojection limit.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+COARSE_SCALE = 1000  # ABMI reference grid cell (m)
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else EXPORT_SCALE
+)
+BUFFER_MAX_ERROR_M = 100
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
@@ -154,10 +170,18 @@ def load_and_process(collection_name, aoi):
     )
 
 
-geomorpho90m = load_and_process(COLLECTION_NAMES[0], aoi)
+# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
+# result is clipped back to the plain aoi downstream.
+clip_geom = (
+    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
+    if AGG_BUFFER_M
+    else aoi
+)
+
+geomorpho90m = load_and_process(COLLECTION_NAMES[0], clip_geom)
 for name in COLLECTION_NAMES[1:]:
     geomorpho90m = geomorpho90m.addBands(
-        load_and_process(name, aoi)
+        load_and_process(name, clip_geom)
     )
 
 # 3.1 Check min and max values (optional) ----
@@ -201,7 +225,7 @@ if EXPORT_TARGET == "reference_grid":
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
-        image=geomorpho90m,
+        image=geomorpho90m.clip(aoi),
         description="Geomorpho90m_AB_native",
         region=aoi,
         folder=DRIVE_FOLDER,

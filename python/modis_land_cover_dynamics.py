@@ -59,6 +59,22 @@ EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
 # AGG_BASE_M stays at the 500 m native scale. The focal analysis
 # (section 6) is a separate 990 m product, unaffected here.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+COARSE_SCALE = 1000  # ABMI reference grid cell (m)
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else EXPORT_SCALE
+)
+BUFFER_MAX_ERROR_M = 100
 AGG_BASE_M = 500  # aggregation base (m) for the grid path
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
@@ -111,10 +127,18 @@ else:
 # year, and clips it to the AOI.
 
 
+# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
+# result is clipped back to the plain aoi downstream.
+clip_geom = (
+    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
+    if AGG_BUFFER_M
+    else aoi
+)
+
 def add_year_and_clip(image):
     """Tag an image with its year and clip it to the AOI."""
     year = image.date().format("yyyy")
-    return image.set("year", year).clip(aoi)
+    return image.set("year", year).clip(clip_geom)
 
 
 dataset = (

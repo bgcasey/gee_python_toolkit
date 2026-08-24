@@ -73,6 +73,22 @@ FOCAL_BASE_M = 50
 # image at FOCAL_BASE_M in the grid CRS, ungridded - useful for
 # inspecting the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+COARSE_SCALE = 1000  # ABMI reference grid cell (m)
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else FOCAL_BASE_M
+)
+BUFFER_MAX_ERROR_M = 100
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Block until every export task finishes so its batch
@@ -100,7 +116,7 @@ report = ComputeReport(
 # pixel ring so the 3x3 slope kernel is unbiased at the edge.
 aoi, aoi_compute = define_study_area(
     use_test_aoi=USE_TEST_AOI,
-    buffer_m=FOCAL_BASE_M,
+    buffer_m=max(FOCAL_BASE_M, AGG_BUFFER_M),
 )
 
 # 3. Slope calculation ----
@@ -128,7 +144,7 @@ if EXPORT_TARGET == "reference_grid":
     )
 elif EXPORT_TARGET == "native":
     task = export_image_to_drive(
-        image=slope,
+        image=slope.clip(aoi),
         description="FABDEM_Slope_Alberta_native",
         region=aoi,
         folder=DRIVE_FOLDER,

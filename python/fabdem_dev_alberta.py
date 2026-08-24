@@ -88,6 +88,22 @@ DEV_RADII = [250, 1000, 2000]  # one export per radius
 # and exports DEV at FOCAL_BASE_M in the grid CRS, ungridded.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
+# Compute ring grown around the aoi before the source is
+# clipped, sized at 2x the output scale. Every output pixel -
+# a 1 km grid cell or a native pixel - is then built from a
+# full neighbourhood rather than one truncated at the aoi
+# edge; a 1 km cell can touch the aoi at a corner and still
+# reach a full diagonal (1414 m) beyond it. The exported
+# image is clipped back to the plain aoi, so the ring never
+# widens the output.
+COARSE_SCALE = 1000  # ABMI reference grid cell (m)
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else FOCAL_BASE_M
+)
+BUFFER_MAX_ERROR_M = 100
+
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
@@ -124,7 +140,7 @@ report = ComputeReport(
 # unbiased at the true AOI edge.
 aoi, aoi_compute = define_study_area(
     use_test_aoi=USE_TEST_AOI,
-    buffer_m=max(DEV_RADII),
+    buffer_m=max(max(DEV_RADII), AGG_BUFFER_M),
 )
 
 # 3. Prepare the DEM ----
