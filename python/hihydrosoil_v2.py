@@ -25,19 +25,6 @@
 #   and Hydrologic Soil Group (HSG) layers are
 #   categorical and are exported without rescaling.
 #
-#   Most assets are ImageCollections over the six standard
-#   soil depths, collapsed with .toBands() and renamed to
-#   lower-case '<asset>_<depth>' (e.g. 'alpha_0-5cm',
-#   'wcpf4-2_100-200cm'); hyphens are kept, so the single
-#   underscore separates variable from depth.
-#   Hydrologic_Soil_Group_250m is a single Image.
-#
-#   Everything exports as float32, class codes included:
-#   Earth Engine writes masked pixels of an integer GeoTIFF as
-#   0 with no nodata flag, and 0 is not a valid class, so the
-#   AOI-clip margin would read as real data. Small integers
-#   survive float32 exactly.
-#
 #   Aggregation to 1 km goes through export_to_reference_grid
 #   (utils.gee_utils): mean() for continuous layers, mode() for
 #   categorical (STC, HSG) to avoid averaging class codes.
@@ -59,8 +46,7 @@ import sys
 
 import ee
 
-# Make utils importable regardless of the working
-# directory VS Code runs the script from
+# Make utils importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
@@ -80,8 +66,7 @@ CRS = "EPSG:3400"  # AB 10-TM (Forest)
 
 # Raster export target, applied to both stacks. "native" writes
 # the ~250 m images in EPSG:3400; "reference_grid" aggregates
-# them onto the ABMI 1 km grid so they stack with the FABDEM
-# terrain layers.
+# them onto the ABMI 1 km grid.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
 # True: continuous and categorical bands share one raster.
@@ -170,8 +155,18 @@ TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
 PRINT_STATS = False  # min/max check (slow for large AOIs)
-USE_TEST_AOI = False  # True: small test AOI; False: Alberta
+USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Block until every export task finishes so its batch
+# EECU-seconds land in the compute report. Costs the full
+# export runtime (hours for a province-wide run), so keep it
+# False for production runs and turn it on when profiling a
+# test AOI.
+WAIT_FOR_EXPORTS = False
+
+# Export tasks started below, for the optional per-task EECU
+# logging in the compute-report section at the end.
+export_tasks = []
 
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
@@ -491,6 +486,7 @@ if EXTRACT_XY_POINTS and hihydro_combined is not None:
             fileFormat="CSV",
         )
         task.start()
+        export_tasks.append(task)
         print(
             "Started export task:",
             task.config["description"],
@@ -518,19 +514,10 @@ if has_categorical:
 # the results. setDefaultProjection pins the native base so
 # reduceResolution knows the input resolution. These are large
 # exports; monitor the Tasks tab.
-#
-# Class codes export as float32 like everything else: Earth
-# Engine writes masked pixels of an integer GeoTIFF as 0 with no
-# nodata flag, and 0 is not a valid STC (1-6) or HSG class.
-# formatOptions={"noData": ...} does not help - Earth Engine
-# accepts it on a Drive export and ignores it. The
-# reference-grid helpers already cast, so only the native
-# exports call toFloat() explicitly.
-
 
 def export_native(image, description, file_name_prefix):
     """Export an image at NATIVE_SCALE in the grid CRS."""
-    ee.batch.Export.image.toDrive(
+    task = ee.batch.Export.image.toDrive(
         image=image.toFloat(),
         description=description,
         folder=DRIVE_FOLDER,
@@ -539,8 +526,11 @@ def export_native(image, description, file_name_prefix):
         scale=NATIVE_SCALE,
         crs=CRS,
         maxPixels=1e13,
-    ).start()
+    )
+    task.start()
+    export_tasks.append(task)
     print("Started export task:", description)
+    return task
 
 
 def on_native_base(image):
@@ -587,7 +577,7 @@ if COMBINE_OUTPUTS:
         combined_1km = parts[0]
         for part in parts[1:]:
             combined_1km = combined_1km.addBands(part)
-        export_to_reference_grid(
+        export_tasks.append(export_to_reference_grid(
             image=combined_1km,
             aoi=aoi,
             description="HiHydroSoil_AB_abmi1km",
@@ -595,7 +585,7 @@ if COMBINE_OUTPUTS:
             file_name_prefix="hihydrosoil_ab_abmi1km",
             aggregate=False,
             wait=False,
-        )
+        ))
 
 elif EXPORT_TARGET == "native":
     # 7.2 Separate files, native resolution (~250 m).
@@ -615,7 +605,7 @@ elif EXPORT_TARGET == "native":
 else:
     # 7.3 Separate files, 1 km on the ABMI reference grid.
     if has_continuous:
-        export_to_reference_grid(
+        export_tasks.append(export_to_reference_grid(
             image=on_native_base(hihydro_continuous_ab),
             aoi=aoi,
             description="HiHydroSoil_Continuous_AB_abmi1km",
@@ -624,9 +614,9 @@ else:
             aggregate=True,
             reducer=ee.Reducer.mean(),
             wait=False,
-        )
+        ))
     if has_categorical:
-        export_to_reference_grid(
+        export_tasks.append(export_to_reference_grid(
             image=on_native_base(hihydro_categorical_ab),
             aoi=aoi,
             description="HiHydroSoil_Categorical_AB_abmi1km",
@@ -635,12 +625,15 @@ else:
             aggregate=True,
             reducer=ee.Reducer.mode(),
             wait=False,
-        )
+        ))
 
 # 8. Compute usage report ----
 # Multiple export tasks are launched above, so this does
 # not block on any single task; it writes the collected
 # section profiles to gee_compute_reports/.
+if WAIT_FOR_EXPORTS:
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----
