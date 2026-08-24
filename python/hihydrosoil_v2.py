@@ -170,14 +170,14 @@ TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
 PRINT_STATS = True  # min/max check (slow for large AOIs)
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Block until every export task finishes so its batch
 # EECU-seconds land in the compute report. Costs the full
 # export runtime (hours for a province-wide run), so keep it
 # False for production runs and turn it on when profiling a
 # test AOI.
-WAIT_FOR_EXPORTS = True
+WAIT_FOR_EXPORTS = False
 
 # Export tasks started below, for the optional per-task EECU
 # logging in the compute-report section at the end.
