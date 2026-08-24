@@ -42,6 +42,32 @@ from contextlib import contextmanager
 import ee
 
 
+# Longest captured section output kept in the report, in
+# characters. Sections that dump whole feature collections can
+# run to megabytes; the tail is dropped with a marker.
+MAX_SECTION_OUTPUT = 20000
+
+
+class _Tee:
+    """Write to several streams at once.
+
+    Used to mirror a section's stdout into the report while it
+    still reaches the console live.
+    """
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, text):
+        for stream in self._streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
 class ComputeReport:
     """Collect EE compute usage and write a txt report.
 
@@ -147,6 +173,7 @@ class ComputeReport:
             return
 
         buf = io.StringIO()
+        printed_buf = io.StringIO()
         start = time.time()
         status = "OK"
         error_text = None
@@ -157,6 +184,12 @@ class ComputeReport:
         body_ok = False
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            # Mirror the block's stdout into the report so the
+            # numbers a section prints (band min/max, band names,
+            # ...) are kept alongside its EECU profile, instead
+            # of only scrolling past in the terminal.
+            real_stdout = sys.stdout
+            sys.stdout = _Tee(real_stdout, printed_buf)
             try:
                 with ee.profilePrinting(destination=buf):
                     yield
@@ -197,6 +230,7 @@ class ComputeReport:
                     if raise_on_error:
                         raise
             finally:
+                sys.stdout = real_stdout
                 elapsed = time.time() - start
                 profile = buf.getvalue().strip()
                 if not profile:
@@ -220,6 +254,16 @@ class ComputeReport:
                     f"Status: {status}\n"
                     f"Wall time: {elapsed:.1f} s\n"
                 )
+                printed = printed_buf.getvalue().strip()
+                if printed:
+                    if len(printed) > MAX_SECTION_OUTPUT:
+                        dropped = len(printed) - MAX_SECTION_OUTPUT
+                        printed = (
+                            printed[:MAX_SECTION_OUTPUT]
+                            + f"\n... [{dropped} more characters "
+                            "truncated]"
+                        )
+                    block += f"Output:\n{printed}\n"
                 for w in caught:
                     warn_msg = f"{w.category.__name__}: {w.message}"
                     self._record_issue(

@@ -74,6 +74,16 @@ AGG_BASE_M = 90  # aggregation base (m) for the grid path
 PRINT_STATS = True  # summary check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Block until every export task finishes so its batch
+# EECU-seconds land in the compute report. Costs the full
+# export runtime (hours for a province-wide run), so keep it
+# False for production runs and turn it on when profiling a
+# test AOI.
+WAIT_FOR_EXPORTS = False
+
+# Export tasks started below, for the optional per-task EECU
+# logging in the compute-report section at the end.
+export_tasks = []
 
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
@@ -140,7 +150,7 @@ def land_cover_file_name(img):
 
 
 if EXPORT_TARGET == "reference_grid":
-    export_collection_to_reference_grid(
+    export_tasks += export_collection_to_reference_grid(
         lc,
         aoi,
         lambda img: land_cover_file_name(img) + "_abmi1km",
@@ -150,7 +160,7 @@ if EXPORT_TARGET == "reference_grid":
         round_values=True,
     )
 elif EXPORT_TARGET == "native":
-    export_image_collection(
+    export_tasks += export_image_collection(
         lc,
         aoi,
         DRIVE_FOLDER,
@@ -169,6 +179,9 @@ else:
 # Collection exports start many batch tasks, so per-task
 # EECU totals are not logged here; monitor progress at
 # https://code.earthengine.google.com/tasks
+if WAIT_FOR_EXPORTS:
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----

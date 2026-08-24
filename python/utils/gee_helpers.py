@@ -606,10 +606,17 @@ def export_image_collection(collection, aoi, folder, scale,
         Output coordinate reference system.
     file_name_fn : callable
         Function that returns a file name given an image.
+
+    Returns
+    -------
+    list
+        The started ee.batch.Task objects, so callers can hand
+        them to ComputeReport.log_task.
     """
     col_list = collection.toList(collection.size())
     size = collection.size().getInfo()
 
+    tasks = []
     for i in range(size):
         try:
             img = ee.Image(col_list.get(i))
@@ -635,9 +642,12 @@ def export_image_collection(collection, aoi, folder, scale,
                 maxPixels=1e13,
             )
             task.start()
+            tasks.append(task)
         except Exception as err:
             print(f"Error processing image: {err}")
             continue
+
+    return tasks
 
 
 def calculate_image_stats(image, geometry, scale,

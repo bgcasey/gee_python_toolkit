@@ -125,8 +125,13 @@ COMPUTE_BUFFER_M = max(TPI_RADII) * (
     FOCAL_BASE_M if TPI_UNITS == "pixels" else 1
 )
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
-COMPUTE_REPORT = True  # write EECU usage report (txt);
-# blocks until the export task finishes
+COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Block until every export task finishes so its batch
+# EECU-seconds land in the compute report. Costs the full
+# export runtime (hours for a province-wide run), so keep it
+# False for production runs and turn it on when profiling a
+# test AOI.
+WAIT_FOR_EXPORTS = False
 
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
@@ -288,8 +293,9 @@ for radius in TPI_RADII:
 # gee_compute_reports/. Note: a full-province export can
 # take hours; for a quick profile use the test AOI.
 
-for task in tasks:
-    report.log_task(task)
+if WAIT_FOR_EXPORTS:
+    for task in tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----

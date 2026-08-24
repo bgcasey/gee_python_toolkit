@@ -74,8 +74,13 @@ FOCAL_BASE_M = 50
 # inspecting the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
-COMPUTE_REPORT = True  # write EECU usage report (txt);
-# blocks until the export task finishes
+COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Block until every export task finishes so its batch
+# EECU-seconds land in the compute report. Costs the full
+# export runtime (hours for a province-wide run), so keep it
+# False for production runs and turn it on when profiling a
+# test AOI.
+WAIT_FOR_EXPORTS = False
 
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
@@ -145,7 +150,8 @@ else:
 # gee_compute_reports/. Note: a full-province export can
 # take hours; for a quick profile use the test AOI.
 
-report.log_task(task)
+if WAIT_FOR_EXPORTS:
+    report.log_task(task)
 report.write()
 
 # End of script ----

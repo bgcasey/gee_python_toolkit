@@ -152,6 +152,16 @@ N_BATCHES = 100  # Match the number of batches assigned in R
 PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Block until every export task finishes so its batch
+# EECU-seconds land in the compute report. Costs the full
+# export runtime (hours for a province-wide run), so keep it
+# False for production runs and turn it on when profiling a
+# test AOI.
+WAIT_FOR_EXPORTS = False
+
+# Export tasks started below, for the optional per-task EECU
+# logging in the compute-report section at the end.
+export_tasks = []
 
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
@@ -339,6 +349,7 @@ if EXTRACT_XY_POINTS:
             fileFormat="CSV",
         )
         task.start()
+        export_tasks.append(task)
         print(
             "Started export task:",
             task.config["description"],
@@ -362,7 +373,7 @@ if EXPORT_TARGET == "reference_grid":
     soilgrids_base = soilgrids_ab.setDefaultProjection(
         crs=CRS, scale=NATIVE_SCALE
     )
-    export_to_reference_grid(
+    export_tasks.append(export_to_reference_grid(
         image=soilgrids_base,
         aoi=aoi,
         description="SoilGrids_AB_abmi1km",
@@ -370,9 +381,9 @@ if EXPORT_TARGET == "reference_grid":
         file_name_prefix="soilgrids_ab_abmi1km",
         aggregate=True,
         wait=False,
-    )
+    ))
 elif EXPORT_TARGET == "native":
-    export_image_to_drive(
+    export_tasks.append(export_image_to_drive(
         image=soilgrids_ab,
         description="SoilGrids_AB_native",
         region=aoi,
@@ -382,7 +393,7 @@ elif EXPORT_TARGET == "native":
         crs=CRS,
         max_pixels=1e13,
         wait=False,
-    )
+    ))
 else:
     raise ValueError(
         "Unknown EXPORT_TARGET: "
@@ -393,6 +404,9 @@ else:
 # Multiple export tasks are launched above, so this does
 # not block on any single task; it writes the collected
 # section profiles to gee_compute_reports/.
+if WAIT_FOR_EXPORTS:
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----
