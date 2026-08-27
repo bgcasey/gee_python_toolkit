@@ -178,6 +178,39 @@ def define_study_area(use_test_aoi=False, buffer_m=0):
     return aoi, aoi_compute
 
 
+def native_scale(source, floor_m=0):
+    """Nominal scale (m) of a source's native projection.
+
+    Reads the projection from an ee.Image, or from the first
+    image of an ee.ImageCollection. Never pass a mosaic:
+    mosaic() drops the fixed projection and reports 1 degree
+    (~111320 m).
+
+    The value is the true grid spacing, so it is rarely round
+    (FABDEM 30.92, MERIT Hydro 92.77, MODIS 463.31). Pass it
+    to setDefaultProjection and reduceResolution as-is.
+
+    floor_m guards a computed focal layer: aggregating a 30 m
+    base to 1 km over the full province exceeds Earth Engine's
+    per-tile reprojection limit, so those layers need a floor
+    of ~50 m. Leave it 0 to take the native scale unchanged.
+
+    Blocks on a getInfo call.
+
+    Args:
+        source (ee.Image or ee.ImageCollection): Unmosaicked
+            source to read the projection from.
+        floor_m (float): Lower bound on the returned scale.
+
+    Returns:
+        float: Scale in metres, at least floor_m.
+    """
+    if isinstance(source, ee.ImageCollection):
+        source = source.first()
+    scale = ee.Image(source).projection().nominalScale().getInfo()
+    return max(scale, floor_m)
+
+
 def fabdem_elevation(aoi_compute, base_m=50):
     """Mosaicked FABDEM elevation pinned to the grid CRS.
 
