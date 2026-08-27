@@ -25,6 +25,10 @@ DRIVE_FOLDER = "gee_exports"
 # CRS, cell size, and origin and stack without resampling. Used
 # by the reference-grid helpers in utils/gee_utils.py.
 GRID_CRS = "EPSG:3400"  # NAD83 / Alberta 10-TM (Forest)
+# Grid cell size in metres. Matches the scale terms in
+# GRID_CRS_TRANSFORM below; kept as its own constant because
+# scripts need it to size aggregation buffers and pixel budgets.
+COARSE_SCALE = 1000
 # Affine transform [xScale, xShear, originX, yShear, yScale,
 # originY]; origin is the grid-aligned top-left corner covering
 # Alberta (west 170616.1822, north 6659532.4311).
