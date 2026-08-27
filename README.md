@@ -119,6 +119,23 @@ Set `EE_PROJECT` to your own project before running any script. Most scripts als
 
 ---
 
+## Starting a new export script
+
+Copy [`python/_template_gee_export.py`](python/_template_gee_export.py) to `python/<layer>_alberta.py` and work through its `[EDIT]` markers. The template carries the conventions every export script here shares, so a new layer stacks with the existing ones without re-deriving them:
+
+| Convention | Where it comes from |
+|------------|---------------------|
+| AOI is the AB2020 provincial boundary asset (or a small test polygon) | `define_study_area()` |
+| Source is read on a compute ring, output clipped back to the true boundary | `COMPUTE_BUFFER_M` → `aoi_compute` |
+| Aggregated to the ABMI 1 km grid and exported on its exact CRS + affine transform | `export_to_reference_grid()`, `GRID_CRS_TRANSFORM` |
+| Float32 output so masked pixels read as `NA`, not `0` | `to_reference_grid()` |
+| `EXPORT_TARGET` switch between the 1 km product and the un-aggregated input | `EXPORT_TARGET` |
+| EECU cost profile written to `gee_compute_reports/` | `ComputeReport` |
+
+It runs unmodified on the test AOI (the placeholder layer is FABDEM elevation), so you can confirm the plumbing works before swapping in your own source.
+
+---
+
 ## Contents
 
 ### Scripts (`python/`)
@@ -126,6 +143,7 @@ Set `EE_PROJECT` to your own project before running any script. Most scripts als
 | File | Description |
 |------|-------------|
 | [_gee_config.py](python/_gee_config.py) | Shared configuration (Earth Engine project ID and default Drive export folder) used by all scripts. |
+| [_template_gee_export.py](python/_template_gee_export.py) | Starting point for a new export script — encodes the shared AOI, compute-ring, grid-aggregation, `EXPORT_TARGET`, and compute-report conventions. Copy it and fill in the `[EDIT]` markers. |
 | [fabdem.py](python/fabdem.py) | Mosaics the FABDEM DEM, clips to the US + Canada, and exports a GeoTIFF. |
 | [fabdem_twi_alberta.py](python/fabdem_twi_alberta.py) | Computes the Topographic Wetness Index (TWI = ln(α/tanβ)) for Alberta using FABDEM slope and MERIT Hydro upslope area. |
 | [fabdem_tpi_alberta.py](python/fabdem_tpi_alberta.py) | Computes the Topographic Position Index (TPI, Weiss 2001) for Alberta from the FABDEM DEM. |
