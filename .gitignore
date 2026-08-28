@@ -22,6 +22,7 @@ tmp/
 
 # Agent instructions (kept local)
 AGENTS.md
+CLAUDE.md
 
 # OS / editor
 .DS_Store
