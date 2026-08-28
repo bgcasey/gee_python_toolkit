@@ -5,18 +5,25 @@
 # inputs:
 #   - Geomorpho90m ImageCollections
 #     (projects/sat-io/open-datasets/Geomorpho90m)
-#   - AB2020 provincial boundary (EE asset)
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Multiband Geomorpho90m GeoTIFF for Alberta, at native
-#     (~90 m) or on the ABMI 1 km reference grid, per
-#     EXPORT_TARGET (exported to Google Drive). The 1 km
-#     product drops the raw 'aspect' band (see notes).
+#   - Multiband Geomorpho90m GeoTIFF for Alberta, either
+#     aligned to the ABMI 1 km reference grid or at
+#     BASE_SCALE_M resolution, selected by EXPORT_TARGET
+#     (exported to Google Drive). The 1 km product drops the
+#     raw 'aspect' band (see notes).
 # notes:
-#   This script loads multiple geomorphometric variables
-#   from the Geomorpho90m dataset, mosaics and clips them
-#   to the AOI, and combines them into a single multiband
-#   image. Map visualization layers from the original GEE
-#   JavaScript are dropped.
+#   Loads the Geomorpho90m geomorphometric variables, mosaics
+#   and clips each to the AOI, and stacks them into a single
+#   multiband image. Geomorpho90m is a stored (pyramided)
+#   dataset, so ~90 m -> 1 km is well under Earth Engine's
+#   per-tile reprojection limit.
+#
+#   The raw 'aspect' band is dropped from the 1 km product:
+#   averaging a circular angle (0-360 deg) is meaningless.
+#   'aspect-cosine' and 'aspect-sine' carry aspect correctly
+#   and mean cleanly.
 #
 #   Citation:
 #   Amatulli, G., McInerney, D., Sethi, T., Strobl, P.,
@@ -32,6 +39,7 @@
 #   script.
 # ---
 
+import math
 import os
 import sys
 
@@ -41,9 +49,10 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
+    define_study_area,
     export_image_to_drive,
     export_to_reference_grid,
     initialize_ee,
@@ -52,43 +61,12 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 90  # meters (Geomorpho90m native ~90 m)
-EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
-# Raster export target. "native" exports the full ~90 m stack;
-# "reference_grid" aggregates (area mean) onto the ABMI 1 km
-# grid so it stacks with the other 1 km covariates. Geomorpho90m
-# is a stored (pyramided) dataset, so 90 m -> 1 km is well under
-# Earth Engine's per-tile reprojection limit.
-EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+TASK_PREFIX = "Geomorpho90m_AB"
+FILE_PREFIX = "global_geomorphometric_layers"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-COARSE_SCALE = 1000  # ABMI reference grid cell (m)
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else EXPORT_SCALE
-)
-BUFFER_MAX_ERROR_M = 100
-PRINT_STATS = True  # min/max check (slow for large AOIs)
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
-COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
-WAIT_FOR_EXPORTS = False
-
-# Base path and Geomorpho90m collections to combine, in the
-# order they are stacked into the multiband export image.
 BASE_PATH = "projects/sat-io/open-datasets/Geomorpho90m/"
+# Collections to combine, in the order they are stacked into
+# the multiband export image.
 COLLECTION_NAMES = [
     "aspect",           # Aspect
     "aspect-cosine",    # Aspect-Cosine
@@ -109,146 +87,149 @@ COLLECTION_NAMES = [
     "tri",              # Terrain Ruggedness Index (TRI)
     "vrm",              # Vector Ruggedness Measure (VRM)
 ]
+# Dropped from the 1 km product; see notes.
+GRID_EXCLUDE_BANDS = ["aspect"]
 
-# 1.2 Initialize Earth Engine ----
-# Project ID is read from _gee_config.py
-initialize_ee()
+# Geomorpho90m's nominal resolution. native_scale reports
+# 92.766 for the underlying grid if you prefer it exact.
+BASE_SCALE_M = 90
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full-province run.
-report = ComputeReport(
-    "global_geomorphometric_layers",
-    enabled=COMPUTE_REPORT,
-)
+# Each layer is read as a stored value, so no neighbourhood.
+FOCAL_REACH_M = 0
 
-# 2. Define study area ----
-# This section defines the export geometry. It uses a
-# small test polygon when USE_TEST_AOI is True; otherwise
-# it uses the AB2020 provincial boundary asset.
+# "native" skips the aggregation and writes BASE_SCALE_M
+# pixels in the grid CRS, ungridded - useful for inspecting
+# the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
+USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+PRINT_STATS = True  # value preview (slow for large AOIs)
+COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
+WAIT_FOR_EXPORTS = False
 
-# 3. Geomorpho90m processing ----
-# This section loads, mosaics, clips, and renames each
-# Geomorpho90m collection, then combines them into a single
-# multiband image.
-
-
-def load_and_process(collection_name, aoi):
-    """Load, mosaic, clip, and rename a collection.
-
-    Parameters
-    ----------
-    collection_name : str
-        Geomorpho90m collection short name.
-    aoi : ee.Geometry
-        Area of interest to clip to.
-
-    Returns
-    -------
-    ee.Image
-        Single-band image renamed to ``collection_name``.
-    """
-    return (
-        ee.ImageCollection(BASE_PATH + collection_name)
-        .mosaic()
-        .clip(aoi)
-        .rename(collection_name)
-    )
-
-
-# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
-# result is clipped back to the plain aoi downstream.
-clip_geom = (
-    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
-    if AGG_BUFFER_M
-    else aoi
-)
-
-geomorpho90m = load_and_process(COLLECTION_NAMES[0], clip_geom)
-for name in COLLECTION_NAMES[1:]:
-    geomorpho90m = geomorpho90m.addBands(
-        load_and_process(name, clip_geom)
-    )
-
-# 3.1 Check min and max values (optional) ----
-# Also runs when COMPUTE_REPORT is on: Earth Engine is
-# lazy, so the profiler needs an evaluated computation
-# (getInfo) to measure per-algorithm EECU usage.
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("Geomorpho90m min/max (reduceRegion)"):
-        stats = geomorpho90m.reduceRegion(
-            reducer=ee.Reducer.minMax(),
-            geometry=aoi,
-            scale=EXPORT_SCALE,
-            maxPixels=1e13,
-            bestEffort=True,
-        ).getInfo()
-    print("Geomorpho90m min and max values:", stats)
-
-# 4. Export data ----
-# Export at the target chosen by EXPORT_TARGET. "native" writes
-# the full ~90 m stack; "reference_grid" aggregates (area mean)
-# onto the ABMI 1 km grid. The raw 'aspect' band is dropped from
-# the 1 km product because averaging a circular angle (0-360
-# deg) is meaningless; 'aspect-cosine' and 'aspect-sine' carry
-# aspect correctly and mean cleanly. setDefaultProjection pins
-# the native base for reduceResolution. Set wait=True to block;
-# otherwise monitor at https://code.earthengine.google.com/tasks
-
-if EXPORT_TARGET == "reference_grid":
-    grid_bands = [n for n in COLLECTION_NAMES if n != "aspect"]
-    geomorpho90m_grid = geomorpho90m.select(
-        grid_bands
-    ).setDefaultProjection(crs=EXPORT_CRS, scale=EXPORT_SCALE)
-    task = export_to_reference_grid(
-        image=geomorpho90m_grid,
-        aoi=aoi,
-        description="Geomorpho90m_AB_abmi1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="global_geomorphometric_layers_abmi1km",
-        aggregate=True,
-        wait=False,
-    )
-elif EXPORT_TARGET == "native":
-    task = export_image_to_drive(
-        image=geomorpho90m.clip(aoi),
-        description="Geomorpho90m_AB_native",
-        region=aoi,
-        folder=DRIVE_FOLDER,
-        file_name_prefix="global_geomorphometric_layers_native",
-        scale=EXPORT_SCALE,
-        crs=EXPORT_CRS,
-        max_pixels=1e13,
-        wait=False,
-    )
-else:
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
     )
 
+# 1.3 Initialize Earth Engine ----
+# Project ID is read from _gee_config.py
+initialize_ee()
+
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
+)
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
+
+# 2. Define study area ----
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
+
+# 3. Build the layer ----
+# Reads over aoi_compute, never aoi; clipped back in section 4.
+
+
+def load_band(collection_name, compute_aoi):
+    """Mosaic one Geomorpho90m collection into a named band."""
+    return (
+        ee.ImageCollection(BASE_PATH + collection_name)
+        .mosaic()
+        .clip(compute_aoi)
+        .rename(collection_name)
+    )
+
+
+layer = load_band(COLLECTION_NAMES[0], aoi_compute)
+for name in COLLECTION_NAMES[1:]:
+    layer = layer.addBands(load_band(name, aoi_compute))
+
+# 3.1 Check layer values (optional) ----
+# Earth Engine is lazy, so the profiler needs an evaluated
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on.
+if PRINT_STATS or COMPUTE_REPORT:
+    with report.section("Geomorpho90m min/max (reduceRegion)"):
+        stats = layer.reduceRegion(
+            reducer=ee.Reducer.minMax(),
+            geometry=aoi,
+            scale=BASE_SCALE_M,
+            maxPixels=1e13,
+            bestEffort=True,
+        ).getInfo()
+    print("Geomorpho90m min/max:", stats)
+
+# 4. Aggregate to the grid and export ----
+# setDefaultProjection pins the native base so
+# reduceResolution knows the input resolution. Monitor
+# progress at https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
+
+if EXPORT_TARGET == "reference_grid":
+    grid_bands = [
+        n for n in COLLECTION_NAMES if n not in GRID_EXCLUDE_BANDS
+    ]
+    export_tasks.append(
+        export_to_reference_grid(
+            image=layer.select(grid_bands).setDefaultProjection(
+                crs=GRID_CRS, scale=BASE_SCALE_M
+            ),
+            aoi=aoi,
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            agg_max_pixels=AGG_MAX_PIXELS,
+            wait=False,
+        )
+    )
+else:
+    export_tasks.append(
+        export_image_to_drive(
+            image=layer.clip(aoi),
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            scale=BASE_SCALE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
+    )
+
 # 5. Compute usage report ----
-# This section waits for the export to finish, records
-# its total EECU-seconds, and writes the txt report to
-# gee_compute_reports/. Note: a full-province export can
-# take hours; for a quick profile use the test AOI.
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
 
 if WAIT_FOR_EXPORTS:
-    report.log_task(task)
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----

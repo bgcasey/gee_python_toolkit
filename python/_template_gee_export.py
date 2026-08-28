@@ -170,31 +170,12 @@ aoi, aoi_compute = define_study_area(
 def build_layer(source, compute_aoi, base_m):
     """Build the layer to export, on the compute ring.
 
-    [EDIT] Add this layer's own logic to the mosaic below.
-    The returned image must stay clipped to compute_aoi rather
-    than aoi, and pinned to the base projection so
-    reduceResolution knows the input resolution. For a source
-    that is a single ee.Image, drop the mosaic() call.
-
-    Parameters
-    ----------
-    source : ee.ImageCollection
-        Unmosaicked source (SOURCE_ASSET).
-    compute_aoi : ee.Geometry
-        Buffered compute AOI (aoi grown by
-        COMPUTE_BUFFER_M).
-    base_m : float
-        Base resolution in metres (BASE_SCALE_M).
-
-    Returns
-    -------
-    ee.Image
-        Single- or multi-band image on the base projection,
-        clipped to the compute ring, bands not renamed.
-
-    Examples
-    --------
-    >>> layer = build_layer(source, aoi_compute, 50)
+    [EDIT] Add this layer's own logic to the mosaic below. The
+    returned image must stay clipped to compute_aoi rather than
+    aoi, and pinned to the base projection so reduceResolution
+    knows the input resolution. Drop the mosaic() call for a
+    source that is a single ee.Image. Bands are renamed by the
+    caller, so a multi-band layer can pass a list.
     """
     return (
         source.mosaic()

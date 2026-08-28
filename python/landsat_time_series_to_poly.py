@@ -42,10 +42,9 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import PROVINCIAL_BOUNDARY_ASSET
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import create_date_list
-from utils.gee_utils import initialize_ee
+from utils.gee_utils import define_study_area, initialize_ee
 from utils.image_collection_to_features import (
     image_collection_to_features,
 )
@@ -70,7 +69,8 @@ SUMMARY_SCALE = 30  # reduction scale (m)
 SUMMARY_CRS = "EPSG:4326"  # reduction CRS
 SUMMARY_TILE_SCALE = 4  # tileScale for parallel reduction
 SUMMARY_FILE_NAME = "ls_poly_summary"  # output CSV prefix
-PRINT_STATS = True  # summary check (slow for large AOIs)
+FILE_PREFIX = "landsat_time_series_to_poly"
+PRINT_STATS = True  # value preview (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 
@@ -78,30 +78,14 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section. Best used with
-# USE_TEST_AOI = True to find choke points cheaply.
-report = ComputeReport(
-    "landsat_time_series_to_poly",
-    enabled=COMPUTE_REPORT,
-)
+# 1.3 Set up run bookkeeping ----
+# report profiles compute usage.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
 
 # 2. Define study area ----
-# Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise uses the AB2020 provincial boundary asset.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
+# The summary polygons sit inside aoi, and the reduction is
+# per polygon, so no compute ring is needed.
+aoi, _ = define_study_area(use_test_aoi=USE_TEST_AOI)
 
 # 2.1 Define summary polygons ----
 # Five ~2 ha test polygons within the AOI, each tagged with
@@ -145,25 +129,21 @@ polys_fc = ee.FeatureCollection([
     ee.Feature(poly5, {"id": 5}),
 ])
 
-# 3. Build the time-series date list ----
-# create_date_list returns an ee.List; ls_fn iterates a
-# client-side list, so the dates are materialized as
-# YYYY-MM-dd strings.
+# 3. Build the collection ----
+# ls_fn iterates a client-side list, so the dates are
+# materialized as YYYY-MM-dd strings.
 date_list = create_date_list(
     ee.Date(LS_START_DATE),
     ee.Date(LS_END_DATE),
     LS_DATE_INTERVAL,
     LS_DATE_INTERVAL_TYPE,
 )
-start_dates = (
-    date_list.map(
-        lambda d: ee.Date(d).format("YYYY-MM-dd")
-    ).getInfo()
-)
+start_dates = date_list.map(
+    lambda d: ee.Date(d).format("YYYY-MM-dd")
+).getInfo()
 
-# 4. Landsat time-series processing ----
-# Computes the selected spectral indices for each interval,
-# drops the QA_PIXEL band, and casts every band to Float32.
+# Selected spectral indices per interval, QA_PIXEL dropped,
+# every band cast to Float32.
 ls = ls_fn(
     start_dates,
     LS_WINDOW,
@@ -184,15 +164,16 @@ def drop_qa_and_cast(image):
 
 ls = ls.map(drop_qa_and_cast)
 
-# 4.1 Check calculated bands (optional) ----
+# 3.1 Check layer values (optional) ----
 # Earth Engine is lazy, so the profiler needs an evaluated
-# computation to measure per-algorithm EECU usage.
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on.
 if PRINT_STATS or COMPUTE_REPORT:
     with report.section("Landsat band names"):
         band_names = ls.first().bandNames().getInfo()
     print("Landsat band names:", band_names)
 
-# 5. Summarize Landsat time series to polygons ----
+# 4. Summarize the time series to polygons ----
 # Applies the mean reducer to every band of each image over
 # each polygon, producing a per-polygon-per-date summary
 # table that is exported to Google Drive as a CSV.
@@ -207,10 +188,12 @@ ls_poly_summary = image_collection_to_features(
     SUMMARY_FILE_NAME,
 )
 
-# 6. Compute usage report ----
+# 5. Compute usage report ----
 # Writes the profiled sections to gee_compute_reports/. The
-# summary export runs as a batch table task; monitor
-# progress at https://code.earthengine.google.com/tasks
+# summary export runs as a batch table task; monitor progress
+# at https://code.earthengine.google.com/tasks
 report.write()
+
+# End of script ----
 
 # End of script ----

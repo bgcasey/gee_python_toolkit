@@ -67,6 +67,7 @@
 #   registered Earth Engine cloud project and run.
 # ---
 
+import math
 import os
 import sys
 
@@ -76,9 +77,10 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
+    define_study_area,
     export_image_to_drive,
     export_to_reference_grid,
     initialize_ee,
@@ -87,9 +89,14 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-NATIVE_SCALE = 250  # Native resolution (m)
-COARSE_SCALE = 1000  # Aggregated resolution (m)
-CRS = "EPSG:3400"  # AB 10-TM (Forest)
+TASK_PREFIX = "SoilGrids_AB"
+FILE_PREFIX = "soilgrids_ab"
+
+# SoilGrids' native resolution; native_scale confirms 250.
+BASE_SCALE_M = 250
+
+# Each value is read as a stored pixel, so no neighbourhood.
+FOCAL_REACH_M = 0
 
 # Raster export target. "native" exports the ~250 m SoilGrids
 # image in EPSG:3400 (ungridded). "reference_grid" aggregates
@@ -99,20 +106,6 @@ CRS = "EPSG:3400"  # AB 10-TM (Forest)
 # Earth Engine's per-tile reprojection limit.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else NATIVE_SCALE
-)
-BUFFER_MAX_ERROR_M = 100
 
 # Base path for SoilGrids 250m v2.0 assets.
 BASE_PATH = "projects/soilgrids-isric/"
@@ -151,7 +144,8 @@ VARIABLES = [
 # Point extraction (section 5). Set EXTRACT_XY_POINTS = False to
 # skip the batched XY point-value extraction and its per-batch
 # CSV exports (e.g. when you only need the raster output).
-EXTRACT_XY_POINTS = False  # True: extract SoilGrids values to XY points
+# True: extract SoilGrids values to XY points
+EXTRACT_XY_POINTS = False
 
 # XY points asset. Must contain a 'batch' property with
 # integer values matching the loop range below (N_BATCHES).
@@ -160,7 +154,7 @@ XY_POINTS_ASSET = (
 )
 
 # Batched extraction parameters.
-EXTRACT_SCALE = NATIVE_SCALE  # 250 m (COARSE_SCALE for 1 km)
+EXTRACT_SCALE = BASE_SCALE_M  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 100  # Match the number of batches assigned in R
 
@@ -174,38 +168,46 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # test AOI.
 WAIT_FOR_EXPORTS = False
 
-# Export tasks started below, for the optional per-task EECU
-# logging in the compute-report section at the end.
-export_tasks = []
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
-# 1.2 Initialize Earth Engine ----
+# 1.3 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section. Best used with
-# USE_TEST_AOI = True to find choke points cheaply.
-report = ComputeReport(
-    "soil_grids_250",
-    enabled=COMPUTE_REPORT,
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
 )
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
 
 # 2. Define study area ----
-# Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise uses the AB2020 provincial boundary asset.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
 
 # 3. Build SoilGrids image ----
 # Load each variable, apply its conversion factor, and
@@ -378,49 +380,41 @@ if EXTRACT_XY_POINTS:
 # Native-resolution exports over Alberta are large; monitor the
 # Tasks tab and expect substantial processing time.
 
-# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
-# result is clipped back to the plain aoi downstream.
-clip_geom = (
-    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
-    if AGG_BUFFER_M
-    else aoi
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
 )
-
-soilgrids_ab = soilgrids.clip(clip_geom)
+soilgrids_ab = soilgrids.clip(aoi_compute)
 
 if EXPORT_TARGET == "reference_grid":
     # setDefaultProjection pins the native base so the
-    # reduceResolution inside export_to_reference_grid knows the
-    # input resolution before aggregating to 1 km. 250 m -> 1 km
-    # is only a 4x factor, well under the reprojection limit.
-    soilgrids_base = soilgrids_ab.setDefaultProjection(
-        crs=CRS, scale=NATIVE_SCALE
+    # reduceResolution inside export_to_reference_grid knows
+    # the input resolution before aggregating to 1 km.
+    export_tasks.append(
+        export_to_reference_grid(
+            image=soilgrids_ab.setDefaultProjection(
+                crs=GRID_CRS, scale=BASE_SCALE_M
+            ),
+            aoi=aoi,
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            agg_max_pixels=AGG_MAX_PIXELS,
+            wait=False,
+        )
     )
-    export_tasks.append(export_to_reference_grid(
-        image=soilgrids_base,
-        aoi=aoi,
-        description="SoilGrids_AB_abmi1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="soilgrids_ab_abmi1km",
-        aggregate=True,
-        wait=False,
-    ))
-elif EXPORT_TARGET == "native":
-    export_tasks.append(export_image_to_drive(
-        image=soilgrids_ab.clip(aoi),
-        description="SoilGrids_AB_native",
-        region=aoi,
-        folder=DRIVE_FOLDER,
-        file_name_prefix="soilgrids_ab_native",
-        scale=NATIVE_SCALE,
-        crs=CRS,
-        max_pixels=1e13,
-        wait=False,
-    ))
 else:
-    raise ValueError(
-        "Unknown EXPORT_TARGET: "
-        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    export_tasks.append(
+        export_image_to_drive(
+            image=soilgrids_ab.clip(aoi),
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            scale=BASE_SCALE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
     )
 
 # 7. Compute usage report ----

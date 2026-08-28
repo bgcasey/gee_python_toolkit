@@ -10,31 +10,27 @@
 # outputs:
 #   - One DEV GeoTIFF per focal radius for Alberta, either
 #     aligned to the ABMI 1 km reference grid or at
-#     FOCAL_BASE_M resolution, selected by EXPORT_TARGET
+#     BASE_SCALE_M resolution, selected by EXPORT_TARGET
 #     (exported to Google Drive)
 # notes:
-#   This script calculates DEV (deviation from mean
-#   elevation) from the FABDEM bare-earth DEM (30 m, forests
-#   and buildings removed), following De Reu et al. (2013):
+#   DEV (deviation from mean elevation) from the FABDEM
+#   bare-earth DEM (30 m, forests and buildings removed),
+#   following De Reu et al. (2013):
 #
 #     DEV = (z - mean_z) / SD_z
 #
 #   where mean_z and SD_z are the mean and standard deviation
 #   of elevation within a focal window. The numerator is the
-#   Topographic Position Index (TPI); dividing by
-#   SD_z standardizes it by local relief, so DEV is expressed
-#   in standard-deviation units rather than metres. A 5 m rise
-#   on flat muskeg and a 300 m ridge in the Rockies can then
-#   score alike, and values are comparable across radii by
-#   construction. DEV is computed at each focal radius in
-#   DEV_RADII, aggregated to the 1 km reference grid, and
-#   exported to Google Drive per radius.
+#   Topographic Position Index (TPI); dividing by SD_z
+#   standardizes it by local relief, so DEV is expressed in
+#   standard-deviation units rather than metres. A 5 m rise on
+#   flat muskeg and a 300 m ridge in the Rockies can then score
+#   alike, and values are comparable across radii by
+#   construction. One export per radius in DEV_RADII.
 #
-#   DEV is computed at FOCAL_BASE_M (50 m) rather than the
-#   native 30 m so the 1 km aggregation stays under Earth
-#   Engine's per-tile reprojection limit (see
-#   utils.gee_utils.to_reference_grid). The grid / boundary /
-#   aggregation / export plumbing lives in utils/gee_utils.py.
+#   DEV is computed at BASE_SCALE_M rather than the native
+#   30 m so the 1 km aggregation stays under Earth Engine's
+#   per-tile reprojection limit.
 #
 #   Data citations:
 #   Hawker, L., et al. (2022). A 30 m global map of
@@ -54,6 +50,7 @@
 #   script.
 # ---
 
+import math
 import os
 import sys
 
@@ -63,7 +60,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, GRID_CRS
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
@@ -76,162 +73,155 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-# FOCAL_BASE_M is the resolution DEV is computed at before
-# aggregating to 1 km (>= ~50 m for a full-province run; keep
-# it <= ~min(DEV_RADII) / 10 so the focal window is well
-# resolved).
-FOCAL_BASE_M = 50
+TASK_PREFIX = "FABDEM_DEV_Alberta"
+FILE_PREFIX = "fabdem_dev_alberta"
+
+# Resolution DEV is computed at before aggregating to 1 km.
+# Keep it <= ~min(DEV_RADII) / 10 so the focal window is well
+# resolved.
+BASE_SCALE_M = 50
+
 DEV_RADII = [250, 1000, 2000]  # one export per radius
-# Raster export target, applied to every radius. "reference_grid"
-# aggregates DEV (area mean) onto the ABMI 1 km grid so it stacks
-# with the other 1 km covariates. "native" skips the aggregation
-# and exports DEV at FOCAL_BASE_M in the grid CRS, ungridded.
+DEV_WINDOW_SHAPE = "circle"  # "circle" or "square"
+DEV_UNITS = "meters"  # "meters" or "pixels"
+SD_EPSILON = 0.001  # floor for SD_z to avoid divide-by-zero
+
+# The focal window reaches its radius; "pixels" radii convert
+# to metres at the base scale.
+FOCAL_REACH_M = max(DEV_RADII) * (
+    BASE_SCALE_M if DEV_UNITS == "pixels" else 1
+)
+
+# Applied to every radius. "native" skips the aggregation and
+# writes BASE_SCALE_M pixels in the grid CRS, ungridded -
+# useful for inspecting the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-COARSE_SCALE = 1000  # ABMI reference grid cell (m)
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else FOCAL_BASE_M
-)
-BUFFER_MAX_ERROR_M = 100
+USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+COMPUTE_REPORT = True  # write EECU usage report (txt)
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
+WAIT_FOR_EXPORTS = False
 
+# 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
     )
-DEV_WINDOW_SHAPE = "circle"  # "circle" or "square"
-DEV_UNITS = "meters"  # "meters" or "pixels"
-SD_EPSILON = 0.001  # floor for SD_z to avoid divide-by-zero
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
-COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
-WAIT_FOR_EXPORTS = False
+if DEV_WINDOW_SHAPE not in ("circle", "square"):
+    raise ValueError(
+        f"Unsupported window shape: {DEV_WINDOW_SHAPE!r}"
+    )
 
-# 1.2 Initialize Earth Engine ----
+# 1.3 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Records total EECU-seconds for each export task.
-# Best used with USE_TEST_AOI = True to gauge compute
-# cost cheaply before a full-province run.
-report = ComputeReport(
-    "fabdem_dev_alberta",
-    enabled=COMPUTE_REPORT,
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
 )
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
 
 # 2. Define study area ----
-# aoi is the export / crop boundary; aoi_compute adds a ring
-# (the largest focal radius) so the focal mean and SD are
-# unbiased at the true AOI edge.
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
 aoi, aoi_compute = define_study_area(
     use_test_aoi=USE_TEST_AOI,
-    buffer_m=max(max(DEV_RADII), AGG_BUFFER_M),
+    buffer_m=COMPUTE_BUFFER_M,
 )
 
 # 3. Prepare the DEM ----
-# FABDEM at the FOCAL_BASE_M base projection so the focal
-# radius maps to real ground distance. The same elevation
-# image feeds every focal radius below.
-elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
+# One elevation image feeds every focal radius below.
+elevation = fabdem_elevation(aoi_compute, base_m=BASE_SCALE_M)
 
 # 4. Compute, aggregate, and export DEV per focal radius ----
-# For each radius in DEV_RADII, elevation mean and SD are
-# reduced over one shared kernel, DEV = (z - mean) / SD is
-# formed, aggregated to the 1 km grid, and exported to Google
-# Drive as its own GeoTIFF. Larger radii use bigger kernels
-# and cost proportionally more compute; the per-task batch
-# EECU-seconds in the report show where. Set wait=True on the
-# export to block; otherwise monitor progress at
+# Larger radii use bigger kernels and cost proportionally more
+# compute; the per-task batch EECU-seconds in the report show
+# where. DEV is unitless and continuous, so it is not rounded.
+# Monitor progress at
 # https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
 
-tasks = []
 for radius in DEV_RADII:
-    # One kernel drives both the mean and SD reductions, so
-    # numerator and denominator share the exact same window.
-    if DEV_WINDOW_SHAPE == "circle":
-        kernel = ee.Kernel.circle(radius=radius, units=DEV_UNITS)
-    elif DEV_WINDOW_SHAPE == "square":
-        kernel = ee.Kernel.square(radius=radius, units=DEV_UNITS)
-    else:
-        raise ValueError(
-            f"Unsupported window shape: {DEV_WINDOW_SHAPE}"
-        )
+    # One kernel drives both reductions, so numerator and
+    # denominator share the exact same window.
+    kernel = (
+        ee.Kernel.circle(radius=radius, units=DEV_UNITS)
+        if DEV_WINDOW_SHAPE == "circle"
+        else ee.Kernel.square(radius=radius, units=DEV_UNITS)
+    )
 
-    # Mean and standard deviation of elevation in the window
     mean_z = elevation.reduceNeighborhood(
-        reducer=ee.Reducer.mean(),
-        kernel=kernel,
+        reducer=ee.Reducer.mean(), kernel=kernel
     )
     sd_z = elevation.reduceNeighborhood(
-        reducer=ee.Reducer.stdDev(),
-        kernel=kernel,
+        reducer=ee.Reducer.stdDev(), kernel=kernel
     )
 
-    # DEV: TPI (z - mean) standardized by local relief (SD).
-    # Floor SD at SD_EPSILON so near-flat windows (SD ~ 0) do
-    # not blow up the ratio. DEV is unitless (SD units) and
-    # continuous, so round_values stays False on export.
+    # Floor SD at SD_EPSILON so near-flat windows do not blow
+    # up the ratio.
     dev = (
-        elevation
-        .subtract(mean_z)
+        elevation.subtract(mean_z)
         .divide(sd_z.max(SD_EPSILON))
         .rename(f"dev_{radius}")
     )
 
-    # 4.1 Export this radius at the chosen EXPORT_TARGET ----
-    # "reference_grid" aggregates DEV to the 1 km grid; "native"
-    # writes it at FOCAL_BASE_M in the grid CRS instead.
-    # EXPORT_TARGET is validated once at the top of the script.
+    description = f"{TASK_PREFIX}_r{radius}_{target_suffix}"
+    file_name_prefix = f"{FILE_PREFIX}_r{radius}_{target_suffix}"
+
     if EXPORT_TARGET == "reference_grid":
-        task = export_to_reference_grid(
-            image=dev,
-            aoi=aoi,
-            description=f"FABDEM_DEV_Alberta_r{radius}_abmi1km",
-            folder=DRIVE_FOLDER,
-            file_name_prefix=f"fabdem_dev_alberta_r{radius}_abmi1km",
-            wait=False,
+        export_tasks.append(
+            export_to_reference_grid(
+                image=dev,
+                aoi=aoi,
+                description=description,
+                folder=DRIVE_FOLDER,
+                file_name_prefix=file_name_prefix,
+                agg_max_pixels=AGG_MAX_PIXELS,
+                wait=False,
+            )
         )
     else:
-        task = export_image_to_drive(
-            image=dev.clip(aoi),
-            description=(
-                f"FABDEM_DEV_Alberta_r{radius}_native"
-            ),
-            region=aoi,
-            folder=DRIVE_FOLDER,
-            file_name_prefix=(
-                f"fabdem_dev_alberta_r{radius}_native"
-            ),
-            scale=FOCAL_BASE_M,
-            crs=GRID_CRS,
-            max_pixels=1e13,
-            wait=False,
+        export_tasks.append(
+            export_image_to_drive(
+                image=dev.clip(aoi),
+                description=description,
+                region=aoi,
+                folder=DRIVE_FOLDER,
+                file_name_prefix=file_name_prefix,
+                scale=BASE_SCALE_M,
+                crs=GRID_CRS,
+                max_pixels=1e13,
+                wait=False,
+            )
         )
-    tasks.append(task)
 
 # 5. Compute usage report ----
-# This section waits for each export to finish, records its
-# total EECU-seconds, and writes the txt report to
-# gee_compute_reports/. Note: a full-province export can
-# take hours; for a quick profile use the test AOI.
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
 
 if WAIT_FOR_EXPORTS:
-    for task in tasks:
+    for task in export_tasks:
         report.log_task(task)
 report.write()
 

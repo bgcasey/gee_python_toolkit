@@ -8,22 +8,16 @@
 #   - AB2020 provincial boundary (Earth Engine asset;
 #     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Mean-elevation GeoTIFF for Alberta, either aligned to the ABMI
-#     1 km reference grid or at FOCAL_BASE_M resolution,
+#   - Mean-elevation GeoTIFF for Alberta, either aligned to the
+#     ABMI 1 km reference grid or at BASE_SCALE_M resolution,
 #     selected by EXPORT_TARGET (exported to Google Drive)
 # notes:
-#   This script produces mean elevation per 1 km cell from the
-#   FABDEM bare-earth DEM (30 m, forests and buildings
-#   removed), as a covariate that stacks with the other ABMI
-#   1 km terrain layers (slope, TPI, DEV, TRI, TWI).
-#
-#   Elevation is a raw value (no neighborhood operation), so
-#   there is no edge bias and no compute buffer is needed. It
-#   is served at FOCAL_BASE_M from FABDEM's pyramids (an area
-#   mean of the native 30 m), then aggregated to the 1 km grid
-#   by area mean -- i.e. mean elevation per cell. The grid /
-#   boundary / aggregation / export plumbing lives in
-#   utils/gee_utils.py.
+#   Mean elevation per 1 km cell from the FABDEM bare-earth DEM
+#   (30 m, forests and buildings removed), as a covariate that
+#   stacks with the other ABMI 1 km terrain layers (slope, TPI,
+#   DEV, TRI, TWI). FABDEM is served at BASE_SCALE_M from its
+#   pyramids (an area mean of the native 30 m), then aggregated
+#   to the 1 km grid by area mean.
 #
 #   For the full-resolution source DEM over a larger extent,
 #   see fabdem.py (US + Canada, native 30 m, not grid-aligned).
@@ -42,6 +36,7 @@
 #   script.
 # ---
 
+import math
 import os
 import sys
 
@@ -49,7 +44,7 @@ import sys
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, GRID_CRS
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
@@ -62,111 +57,115 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-# FOCAL_BASE_M is the resolution elevation is served at before
-# aggregating to 1 km. Elevation has no neighborhood op, so any
-# base under the reprojection limit works (>= ~50 m for a
-# full-province run); 50 m is the area mean of the native 30 m.
-FOCAL_BASE_M = 50
-# Raster export target. "reference_grid" aggregates elevation (area
-# mean) onto the ABMI 1 km grid so it stacks with the other 1 km
-# covariates. "native" skips the aggregation and exports the
-# image at FOCAL_BASE_M in the grid CRS, ungridded - useful for
-# inspecting the input to the aggregation.
+BAND_NAME = "elevation"
+TASK_PREFIX = "FABDEM_Elevation_Alberta"
+FILE_PREFIX = "fabdem_elevation_alberta"
+
+# Resolution FABDEM is served at before aggregating to 1 km.
+BASE_SCALE_M = 50
+
+# Elevation is a raw value, so no neighbourhood is read.
+FOCAL_REACH_M = 0
+
+# "native" skips the aggregation and writes BASE_SCALE_M
+# pixels in the grid CRS, ungridded - useful for inspecting
+# the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-COARSE_SCALE = 1000  # ABMI reference grid cell (m)
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else FOCAL_BASE_M
-)
-BUFFER_MAX_ERROR_M = 100
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
 
-# 1.2 Initialize Earth Engine ----
-# Project ID is read from _gee_config.py
-initialize_ee()
-
-# 1.3 Set up compute usage report ----
-# Records total EECU-seconds for each export task.
-# Best used with USE_TEST_AOI = True to gauge compute
-# cost cheaply before a full-province run.
-report = ComputeReport(
-    "fabdem_elev_alberta",
-    enabled=COMPUTE_REPORT,
-)
-
-# 2. Define study area ----
-# No neighborhood op, so no compute ring is needed (buffer_m=0
-# makes aoi_compute == aoi).
-aoi, aoi_compute = define_study_area(
-    use_test_aoi=USE_TEST_AOI,
-    buffer_m=AGG_BUFFER_M,
-)
-
-# 3. Prepare the DEM ----
-# FABDEM served at the FOCAL_BASE_M base projection (pyramid
-# area mean of the native 30 m) and clipped to the AOI.
-elevation = fabdem_elevation(aoi_compute, base_m=FOCAL_BASE_M)
-
-# 4. Aggregate to the grid and export ----
-# EXPORT_TARGET picks the output. "reference_grid" hands elevation to
-# export_to_reference_grid, which aggregates it to the 1 km ABMI
-# grid by area mean and exports it on the grid's exact CRS and
-# transform. "native" skips the aggregation and writes elevation at
-# FOCAL_BASE_M in the grid CRS instead. Set wait=True to block;
-# otherwise monitor progress at
-# https://code.earthengine.google.com/tasks
-if EXPORT_TARGET == "reference_grid":
-    task = export_to_reference_grid(
-        image=elevation.rename("elevation"),
-        aoi=aoi,
-        description="FABDEM_Elevation_Alberta_abmi1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="fabdem_elevation_alberta_abmi1km",
-        wait=False,
-    )
-elif EXPORT_TARGET == "native":
-    task = export_image_to_drive(
-        image=elevation.rename("elevation").clip(aoi),
-        description="FABDEM_Elevation_Alberta_native",
-        region=aoi,
-        folder=DRIVE_FOLDER,
-        file_name_prefix="fabdem_elevation_alberta_native",
-        scale=FOCAL_BASE_M,
-        crs=GRID_CRS,
-        max_pixels=1e13,
-        wait=False,
-    )
-else:
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
     )
 
+# 1.3 Initialize Earth Engine ----
+# Project ID is read from _gee_config.py
+initialize_ee()
+
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
+)
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
+
+# 2. Define study area ----
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
+
+# 3. Build the layer ----
+# Reads over aoi_compute, never aoi; clipped back in section 4.
+layer = fabdem_elevation(aoi_compute, base_m=BASE_SCALE_M).rename(
+    BAND_NAME
+)
+
+# 4. Aggregate to the grid and export ----
+# Monitor progress at
+# https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
+
+if EXPORT_TARGET == "reference_grid":
+    export_tasks.append(
+        export_to_reference_grid(
+            image=layer,
+            aoi=aoi,
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            agg_max_pixels=AGG_MAX_PIXELS,
+            wait=False,
+        )
+    )
+else:
+    export_tasks.append(
+        export_image_to_drive(
+            image=layer.clip(aoi),
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            scale=BASE_SCALE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
+    )
+
 # 5. Compute usage report ----
-# This section waits for the export to finish, records
-# its total EECU-seconds, and writes the txt report to
-# gee_compute_reports/. Note: a full-province export can
-# take hours; for a quick profile use the test AOI.
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
 
 if WAIT_FOR_EXPORTS:
-    report.log_task(task)
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----

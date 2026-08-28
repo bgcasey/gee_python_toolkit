@@ -5,25 +5,27 @@
 # inputs:
 #   - Landsat 5/7/8/9 Surface Reflectance collections
 #     (LANDSAT/*/C02/T1_L2)
-#   - AB2020 provincial boundary (EE asset)
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Annual multiband spectral-index GeoTIFFs exported to
-#     Google Drive, at native (30 m) or aggregated to the ABMI
-#     1 km reference grid (per EXPORT_TARGET), and at focal
-#     scales (0/150/250 m) in EPSG:3978.
+#   - One annual multiband spectral-index GeoTIFF per date,
+#     either aggregated to the ABMI 1 km reference grid or at
+#     NATIVE_SCALE_M, selected by EXPORT_TARGET
+#   - Focal (neighbourhood) GeoTIFFs at 0/150/250 m in
+#     FOCAL_CRS, exported alongside and not affected by
+#     EXPORT_TARGET
 #   - Per-band min/max summary CSV (image_stats)
 # notes:
-#   Python port of landsat_time_series.js for the Earth
-#   Engine Python API. Builds an annual date list, computes
-#   user-selected spectral indices via the shared ls_fn
-#   helper, drops the QA_PIXEL band, casts to Float32, and
-#   exports multiband images plus focal derivatives.
+#   Builds an annual date list, computes the selected spectral
+#   indices via the shared ls_fn helper, drops the QA_PIXEL
+#   band, and casts to Float32.
 #
-#   The original Map.addLayer/Map.centerObject calls, vis
-#   parameters, and debug print() blocks are omitted.
+#   BASE_SCALE_M is the base each year is pinned to before
+#   aggregating, keeping the 30 m -> 1 km jump under Earth
+#   Engine's per-tile reprojection limit.
 #
-#   Deviation: the shared ls_fn helper expects a client-
-#   side list of date strings, so the ee.List produced by
+#   Deviation: the shared ls_fn helper expects a client-side
+#   list of date strings, so the ee.List produced by
 #   create_date_list is materialized with getInfo() before
 #   being passed in.
 #
@@ -33,6 +35,7 @@
 #   Then set EE_PROJECT in _gee_config.py and run.
 # ---
 
+import math
 import os
 import sys
 
@@ -42,7 +45,7 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import (
     calculate_image_collection_stats,
@@ -52,6 +55,7 @@ from utils.gee_helpers import (
     focal_stats,
 )
 from utils.gee_utils import (
+    define_study_area,
     export_collection_to_reference_grid,
     initialize_ee,
 )
@@ -60,6 +64,8 @@ from utils.landsat_time_series import ls_fn
 # 1. Setup ----
 
 # 1.1 User parameters ----
+FILE_PREFIX = "landsat_multiband"
+
 LS_START_DATE = "2000-06-01"  # first time-series date
 LS_END_DATE = "2024-06-01"  # last time-series date
 LS_DATE_INTERVAL = 1  # step between series start dates
@@ -72,88 +78,91 @@ LS_INDICES = [
     "LAI", "NBR", "NDMI", "NDSI", "NDVI",
     "NDWI", "SAVI", "SI",
 ]
-EXPORT_SCALE = 30  # native Landsat resolution (m)
-EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
-# Export target for the annual surfaces (section 6). "native"
-# writes each year at 30 m; "reference_grid" aggregates each
-# year (area mean) onto the ABMI 1 km grid so the series stacks
-# with the other 1 km covariates. AGG_BASE_M is the coarse base
-# each year is pinned to before aggregating so the 30 m -> 1 km
-# jump stays under Earth Engine's per-tile reprojection limit.
-# The focal analysis (section 7) is a separate 990 m product
-# and is not affected by this toggle.
-EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
-AGG_BASE_M = 50  # aggregation base (m) for the grid path
+
+# Base each year is pinned to before aggregating; see notes.
+BASE_SCALE_M = 50
+NATIVE_SCALE_M = 30  # resolution of the "native" export
+
+# Separate focal product (section 5), not aggregated to the
+# ABMI grid and not affected by EXPORT_TARGET.
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
-PRINT_STATS = True  # min/max check (slow for large AOIs)
+
+FOCAL_REACH_M = max(FOCAL_KERNELS)
+
+# "native" skips the aggregation and writes NATIVE_SCALE_M
+# pixels in the grid CRS, ungridded - useful for inspecting
+# the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
 
-# Export tasks started below, for the optional per-task EECU
-# logging in the compute-report section at the end.
-export_tasks = []
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
-# 1.2 Initialize Earth Engine ----
+# 1.3 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section. Best used with
-# USE_TEST_AOI = True to find choke points cheaply.
-report = ComputeReport(
-    "landsat_time_series",
-    enabled=COMPUTE_REPORT,
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else NATIVE_SCALE_M
 )
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
 
 # 2. Define study area ----
-# Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise uses the AB2020 provincial boundary asset.
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
 
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
-
-# 3. Build the time-series date list ----
-# create_date_list returns an ee.List; ls_fn iterates a
-# client-side list, so the dates are materialized as
-# YYYY-MM-dd strings.
+# 3. Build the collection ----
+# Reads over aoi_compute, never aoi; clipped back in section 4.
+# ls_fn iterates a client-side list, so the dates are
+# materialized as YYYY-MM-dd strings.
 date_list = create_date_list(
     ee.Date(LS_START_DATE),
     ee.Date(LS_END_DATE),
     LS_DATE_INTERVAL,
     LS_DATE_INTERVAL_TYPE,
 )
-start_dates = (
-    date_list.map(
-        lambda d: ee.Date(d).format("YYYY-MM-dd")
-    ).getInfo()
-)
+start_dates = date_list.map(
+    lambda d: ee.Date(d).format("YYYY-MM-dd")
+).getInfo()
 
-# 4. Landsat time-series processing ----
-# Computes the selected spectral indices for each interval,
-# drops the QA_PIXEL band, and casts every band to Float32.
 ls = ls_fn(
     start_dates,
     LS_WINDOW,
     LS_WINDOW_TYPE,
-    aoi,
+    aoi_compute,
     LS_INDICES,
     LS_STATISTIC,
 )
@@ -169,66 +178,71 @@ def drop_qa_and_cast(image):
 
 ls = ls.map(drop_qa_and_cast)
 
-# 5. Check calculated bands (optional) ----
-# Computes per-band min/max for the collection, prints the
-# first-image summary, and exports the full table as a CSV.
+# 3.1 Check layer values (optional) ----
+# Earth Engine is lazy, so the profiler needs an evaluated
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on. The full per-band table also goes out
+# as a CSV.
 if PRINT_STATS or COMPUTE_REPORT:
     reducer = ee.Reducer.min().combine(
         ee.Reducer.max(), "", True
     )
     collection_stats = calculate_image_collection_stats(
-        ls, aoi, 1000, 1e13, reducer
+        ls, aoi, COARSE_SCALE, 1e13, reducer
     )
     with report.section("Landsat band min/max stats"):
-        summary = (
-            collection_stats.first()
-            .toDictionary()
-            .getInfo()
-        )
-    print("Landsat first-image stats:", summary)
+        stats = collection_stats.first().toDictionary().getInfo()
+    print("Landsat first-image stats:", stats)
     export_stats_to_csv(collection_stats, "image_stats")
 
-# 6. Export time series to Google Drive ----
-# Exports each image in the collection as a multiband
-# GeoTIFF, one export task per image.
+# 4. Export the time series ----
+# One export task per image. Monitor progress at
+# https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
 
 
 def landsat_file_name(img):
-    """File name for the native-resolution export."""
+    """File name for one multiband export."""
     year = img.get("year").getInfo() or "unknown"
-    return "landsat_multiband_" + str(year)
+    return f"{FILE_PREFIX}_{year}_{target_suffix}"
 
 
 if EXPORT_TARGET == "reference_grid":
     export_tasks += export_collection_to_reference_grid(
         ls,
         aoi,
-        lambda img: landsat_file_name(img) + "_abmi1km",
+        landsat_file_name,
         folder=DRIVE_FOLDER,
         reducer=ee.Reducer.mean(),
-        agg_base_m=AGG_BASE_M,
+        agg_base_m=BASE_SCALE_M,
+        agg_max_pixels=AGG_MAX_PIXELS,
     )
-elif EXPORT_TARGET == "native":
+else:
     export_tasks += export_image_collection(
         ls,
         aoi,
         DRIVE_FOLDER,
-        EXPORT_SCALE,
-        EXPORT_CRS,
-        lambda img: landsat_file_name(img) + "_native",
-    )
-else:
-    raise ValueError(
-        "Unknown EXPORT_TARGET: "
-        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+        NATIVE_SCALE_M,
+        GRID_CRS,
+        landsat_file_name,
     )
 
-# 7. Focal analysis ----
-# Exports focal (neighbourhood) statistics at 0/150/250 m
-# in EPSG:3978. The 0 m case renames bands with a "_0"
+# 5. Focal analysis ----
+# A separate product: focal (neighbourhood) statistics at
+# 0/150/250 m in FOCAL_CRS. The 0 m case appends a "_0" band
 # suffix but applies no smoothing.
 
-# 7.1 Zero-metre focal (no smoothing) ----
+
+def make_focal_file_name(kernel_size):
+    """Build the file-name function for one focal radius."""
+
+    def focal_file_name(img):
+        year = img.get("year").getInfo() or "unknown"
+        return f"{FILE_PREFIX}_{kernel_size}_{year}"
+
+    return focal_file_name
 
 
 def rename_zero_focal(img):
@@ -239,41 +253,21 @@ def rename_zero_focal(img):
     return img.rename(new_names)
 
 
-ls_0 = ls.map(rename_zero_focal)
-
-
-def landsat_file_name_0(img):
-    """File name for the 0 m focal export."""
-    year = img.get("year").getInfo() or "unknown"
-    return "landsat_multiband_0_" + str(year)
-
-
 export_tasks += export_image_collection(
-    ls_0,
+    ls.map(rename_zero_focal),
     aoi,
     DRIVE_FOLDER,
     FOCAL_SCALE,
     FOCAL_CRS,
-    landsat_file_name_0,
+    make_focal_file_name(0),
 )
 
-# 7.2 Circular focal means (150 m, 250 m) ----
 for kernel_size in FOCAL_KERNELS:
     ls_focal = ls.map(
         lambda img, k=kernel_size: focal_stats(
             img, k, "circle", ["year"]
         )
     )
-
-    def make_focal_file_name(k):
-        def focal_file_name(img):
-            year = img.get("year").getInfo() or "unknown"
-            return "landsat_multiband_" + str(k) + "_" + str(
-                year
-            )
-
-        return focal_file_name
-
     export_tasks += export_image_collection(
         ls_focal,
         aoi,
@@ -283,11 +277,10 @@ for kernel_size in FOCAL_KERNELS:
         make_focal_file_name(kernel_size),
     )
 
-# 8. Compute usage report ----
-# Writes the profiled sections to gee_compute_reports/.
-# Collection exports start many batch tasks, so per-task
-# EECU totals are not logged here; monitor progress at
-# https://code.earthengine.google.com/tasks
+# 6. Compute usage report ----
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
+
 if WAIT_FOR_EXPORTS:
     for task in export_tasks:
         report.log_task(task)

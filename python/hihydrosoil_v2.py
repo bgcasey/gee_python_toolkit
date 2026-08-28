@@ -41,6 +41,7 @@
 #   registered Earth Engine cloud project and run.
 # ---
 
+import math
 import os
 import sys
 
@@ -49,9 +50,10 @@ import ee
 # Make utils importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
+    define_study_area,
     export_to_reference_grid,
     initialize_ee,
     to_reference_grid,
@@ -60,40 +62,24 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-NATIVE_SCALE = 250  # Native resolution (m)
-COARSE_SCALE = 1000  # Aggregated resolution (m)
-CRS = "EPSG:3400"  # AB 10-TM (Forest)
+TASK_PREFIX = "HiHydroSoil_AB"
+FILE_PREFIX = "hihydrosoil_ab"
+
+# HiHydroSoil's native resolution.
+BASE_SCALE_M = 250
+
+# Each value is read as a stored pixel, so no neighbourhood.
+FOCAL_REACH_M = 0
 
 # Raster export target, applied to both stacks. "native" writes
 # the ~250 m images in EPSG:3400; "reference_grid" aggregates
 # them onto the ABMI 1 km grid.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else NATIVE_SCALE
-)
-BUFFER_MAX_ERROR_M = 100
-
 # True: continuous and categorical bands share one raster.
 # False: one file per group. Each group still aggregates with
 # its own reducer either way.
 COMBINE_OUTPUTS = True
-
-if EXPORT_TARGET not in ("native", "reference_grid"):
-    raise ValueError(
-        "Unknown EXPORT_TARGET: "
-        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
-    )
 
 # Base path for HiHydroSoil v2.0 assets.
 BASE_PATH = "projects/sat-io/open-datasets/HiHydroSoilv2_0/"
@@ -156,7 +142,8 @@ CATEGORICAL_COLLECTIONS = [
 # Point extraction (section 5). Set EXTRACT_XY_POINTS = False to
 # skip the batched XY point-value extraction and its per-batch
 # CSV exports (e.g. when you only need the raster outputs).
-EXTRACT_XY_POINTS = False  # True: extract HiHydroSoil values to XY points
+# True: extract HiHydroSoil values to XY points
+EXTRACT_XY_POINTS = False
 
 # XY points asset. Must contain a 'batch' property with
 # integer values matching the loop range below (N_BATCHES).
@@ -165,7 +152,7 @@ XY_POINTS_ASSET = (
 )
 
 # Batched extraction parameters.
-EXTRACT_SCALE = NATIVE_SCALE  # 250 m (COARSE_SCALE for 1 km)
+EXTRACT_SCALE = BASE_SCALE_M  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
@@ -183,34 +170,45 @@ WAIT_FOR_EXPORTS = False
 # logging in the compute-report section at the end.
 export_tasks = []
 
-# 1.2 Initialize Earth Engine ----
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+
+# 1.3 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section. Best used with
-# USE_TEST_AOI = True to find choke points cheaply.
-report = ComputeReport(
-    "hihydrosoil_v2",
-    enabled=COMPUTE_REPORT,
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
 )
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
 
 # 2. Define study area ----
-# Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise uses the AB2020 provincial boundary asset.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
 
 # 2.1 Apply the asset filter. Empty/None = no filter. The
 # Hydrologic_Soil_Group asset is loaded separately (single
@@ -522,19 +520,13 @@ if EXTRACT_XY_POINTS and hihydro_combined is not None:
 # values from outside Alberta, which is the point.
 # The native path aggregates nothing, so it clips to aoi directly.
 
-clip_geom = (
-    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
-    if AGG_BUFFER_M
-    else aoi
-)
-
 hihydro_continuous_ab = None
 hihydro_categorical_ab = None
 
 if has_continuous:
-    hihydro_continuous_ab = hihydro_continuous.clip(clip_geom)
+    hihydro_continuous_ab = hihydro_continuous.clip(aoi_compute)
 if has_categorical:
-    hihydro_categorical_ab = hihydro_categorical.clip(clip_geom)
+    hihydro_categorical_ab = hihydro_categorical.clip(aoi_compute)
 
 # 7. Export raster outputs ----
 # EXPORT_TARGET picks the resolution, COMBINE_OUTPUTS picks one
@@ -548,15 +540,15 @@ if has_categorical:
 # exports; monitor the Tasks tab.
 
 def export_native(image, description, file_name_prefix):
-    """Export an image at NATIVE_SCALE in the grid CRS."""
+    """Export an image at BASE_SCALE_M in the grid CRS."""
     task = ee.batch.Export.image.toDrive(
         image=image.clip(aoi).toFloat(),
         description=description,
         folder=DRIVE_FOLDER,
         fileNamePrefix=file_name_prefix,
         region=aoi,
-        scale=NATIVE_SCALE,
-        crs=CRS,
+        scale=BASE_SCALE_M,
+        crs=GRID_CRS,
         maxPixels=1e13,
     )
     task.start()
@@ -567,7 +559,9 @@ def export_native(image, description, file_name_prefix):
 
 def on_native_base(image):
     """Pin an image to the native base for reduceResolution."""
-    return image.setDefaultProjection(crs=CRS, scale=NATIVE_SCALE)
+    return image.setDefaultProjection(
+        crs=GRID_CRS, scale=BASE_SCALE_M
+    )
 
 
 if COMBINE_OUTPUTS:

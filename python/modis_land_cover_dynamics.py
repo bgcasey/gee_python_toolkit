@@ -5,22 +5,23 @@
 # inputs:
 #   - MODIS MCD12Q2 phenology collection
 #     (MODIS/061/MCD12Q2)
-#   - AB2020 provincial boundary (EE asset)
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - Annual multiband phenology GeoTIFFs exported to Google
-#     Drive, at native (500 m) or aggregated to the ABMI 1 km
-#     reference grid (per EXPORT_TARGET), and at focal scales
-#     (0/150/250 m) in EPSG:3978.
+#   - One annual multiband phenology GeoTIFF per year, either
+#     aggregated to the ABMI 1 km reference grid or at
+#     NATIVE_SCALE_M, selected by EXPORT_TARGET
+#   - Focal (neighbourhood) GeoTIFFs at 0/150/250 m in
+#     FOCAL_CRS, exported alongside and not affected by
+#     EXPORT_TARGET
 # notes:
-#   Python port of modis_land_cover_dynamics.js for the
-#   Earth Engine Python API. Extracts all bands from the
-#   MODIS MCD12Q2 phenology product, applies band scaling
-#   factors, casts to Float32, and exports annual
-#   multiband images. Focal analyses (0/150/250 m) are
-#   exported separately in EPSG:3978.
+#   Extracts all bands from the MODIS MCD12Q2 phenology
+#   product, applies the EVI band scaling factors, and casts
+#   to Float32.
 #
-#   The original Map.addLayer/Map.setCenter calls, vis
-#   parameters, and debug print() blocks are omitted.
+#   NATIVE_SCALE_M is MCD12Q2's nominal 500 m; native_scale
+#   reports 463.31 for the underlying sinusoidal grid if you
+#   prefer it exact.
 #
 #   Setup (once):
 #     pip install earthengine-api
@@ -28,6 +29,7 @@
 #   Then set EE_PROJECT in _gee_config.py and run.
 # ---
 
+import math
 import os
 import sys
 
@@ -37,10 +39,11 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_helpers import export_image_collection, focal_stats
 from utils.gee_utils import (
+    define_study_area,
     export_collection_to_reference_grid,
     initialize_ee,
 )
@@ -48,141 +51,103 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
+FILE_PREFIX = "MODIS_MCD12Q2"
+
+SOURCE_ASSET = "MODIS/061/MCD12Q2"
 MODIS_START_DATE = "2024-01-01"  # phenology year start
 MODIS_END_DATE = "2024-12-31"  # phenology year end
-EXPORT_SCALE = 500  # native MCD12Q2 resolution (m)
-EXPORT_CRS = "EPSG:3400"  # native export CRS (AB 10-TM)
-# Export target for the annual surfaces (section 5). "native"
-# writes each year at 500 m; "reference_grid" aggregates each
-# year (area mean) onto the ABMI 1 km grid so the series stacks
-# with the other 1 km covariates. 500 m -> 1 km is only ~2x, so
-# AGG_BASE_M stays at the 500 m native scale. The focal analysis
-# (section 6) is a separate 990 m product, unaffected here.
-EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-COARSE_SCALE = 1000  # ABMI reference grid cell (m)
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else EXPORT_SCALE
-)
-BUFFER_MAX_ERROR_M = 100
-AGG_BASE_M = 500  # aggregation base (m) for the grid path
+# MCD12Q2 is already coarse, so the aggregation base is its
+# native resolution.
+BASE_SCALE_M = 500
+NATIVE_SCALE_M = 500  # resolution of the "native" export
+
+# Separate focal product (section 5), not aggregated to the
+# ABMI grid and not affected by EXPORT_TARGET.
 FOCAL_SCALE = 990  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
-PRINT_STATS = True  # min/max check (slow for large AOIs)
+
+FOCAL_REACH_M = max(FOCAL_KERNELS)
+
+# "native" skips the aggregation and writes NATIVE_SCALE_M
+# pixels in the grid CRS, ungridded - useful for inspecting
+# the input to the aggregation.
+EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
 
-# Export tasks started below, for the optional per-task EECU
-# logging in the compute-report section at the end.
-export_tasks = []
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
+    raise ValueError(
+        "Unknown EXPORT_TARGET: "
+        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
 
-# 1.2 Initialize Earth Engine ----
+# 1.3 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section. Best used with
-# USE_TEST_AOI = True to find choke points cheaply.
-report = ComputeReport(
-    "modis_land_cover_dynamics",
-    enabled=COMPUTE_REPORT,
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else NATIVE_SCALE_M
 )
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
 
 # 2. Define study area ----
-# Uses a small test polygon when USE_TEST_AOI is True;
-# otherwise uses the AB2020 provincial boundary asset.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
-
-# 3. Load MODIS MCD12Q2 dataset ----
-# Loads the phenology collection, tags each image with its
-# year, and clips it to the AOI.
-
-
-# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
-# result is clipped back to the plain aoi downstream.
-clip_geom = (
-    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
-    if AGG_BUFFER_M
-    else aoi
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
 )
+
+# 3. Build the collection ----
+# Reads over aoi_compute, never aoi; clipped back in section 4.
+
 
 def add_year_and_clip(image):
-    """Tag an image with its year and clip it to the AOI."""
+    """Tag an image with its year and clip it to the ring."""
     year = image.date().format("yyyy")
-    return image.set("year", year).clip(clip_geom)
-
-
-dataset = (
-    ee.ImageCollection("MODIS/061/MCD12Q2")
-    .filter(ee.Filter.date(MODIS_START_DATE, MODIS_END_DATE))
-    .map(add_year_and_clip)
-)
-
-# 3.1 Apply scaling factors to selected bands ----
-# EVI minima/amplitudes are scaled by 0.0001 and EVI areas
-# by 0.1, overwriting the original band values.
+    return image.set("year", year).clip(aoi_compute)
 
 
 def apply_scaling(image):
-    """Scale the EVI phenology bands of a MODIS image."""
-    scaled = (
-        image.select(["EVI_Minimum_1"])
-        .multiply(0.0001)
-        .rename("EVI_Minimum_1")
-        .addBands(
-            image.select(["EVI_Minimum_2"])
-            .multiply(0.0001)
-            .rename("EVI_Minimum_2")
-        )
-        .addBands(
-            image.select(["EVI_Amplitude_1"])
-            .multiply(0.0001)
-            .rename("EVI_Amplitude_1")
-        )
-        .addBands(
-            image.select(["EVI_Amplitude_2"])
-            .multiply(0.0001)
-            .rename("EVI_Amplitude_2")
-        )
-        .addBands(
-            image.select(["EVI_Area_1"])
-            .multiply(0.1)
-            .rename("EVI_Area_1")
-        )
-        .addBands(
-            image.select(["EVI_Area_2"])
-            .multiply(0.1)
-            .rename("EVI_Area_2")
-        )
+    """Rescale the EVI phenology bands to physical units."""
+    scale_by = {
+        "EVI_Minimum_1": 0.0001,
+        "EVI_Minimum_2": 0.0001,
+        "EVI_Amplitude_1": 0.0001,
+        "EVI_Amplitude_2": 0.0001,
+        "EVI_Area_1": 0.1,
+        "EVI_Area_2": 0.1,
+    }
+    scaled = ee.Image.cat(
+        [
+            image.select([band]).multiply(factor).rename(band)
+            for band, factor in scale_by.items()
+        ]
     )
     return ee.Image(
         image.addBands(scaled, None, True).copyProperties(
@@ -191,14 +156,18 @@ def apply_scaling(image):
     )
 
 
-dataset = dataset.map(apply_scaling)
+dataset = (
+    ee.ImageCollection(SOURCE_ASSET)
+    .filter(ee.Filter.date(MODIS_START_DATE, MODIS_END_DATE))
+    .map(add_year_and_clip)
+    .map(apply_scaling)
+    .map(lambda img: img.toFloat())
+)
 
-# 3.2 Ensure all bands are Float32 ----
-dataset = dataset.map(lambda img: img.toFloat())
-
-# 4. Check bands (optional) ----
+# 3.1 Check layer values (optional) ----
 # Earth Engine is lazy, so the profiler needs an evaluated
-# computation to measure per-algorithm EECU usage.
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on.
 if PRINT_STATS or COMPUTE_REPORT:
     with report.section("MODIS band min/max (reduceRegion)"):
         stats = (
@@ -206,7 +175,7 @@ if PRINT_STATS or COMPUTE_REPORT:
             .reduceRegion(
                 reducer=ee.Reducer.minMax(),
                 geometry=aoi,
-                scale=EXPORT_SCALE,
+                scale=NATIVE_SCALE_M,
                 maxPixels=1e13,
                 bestEffort=True,
             )
@@ -214,48 +183,54 @@ if PRINT_STATS or COMPUTE_REPORT:
         )
     print("MODIS first-image min/max:", stats)
 
-# 5. Export time series to Google Drive ----
-# Exports each image in the collection as a multiband
-# GeoTIFF. export_image_collection iterates client-side and
-# starts one export task per image.
+# 4. Export the time series ----
+# One export task per image. Monitor progress at
+# https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
 
 
 def modis_file_name(img):
-    """File name for the native-resolution export."""
+    """File name for one multiband export."""
     year = img.date().format("yyyy").getInfo()
-    return "MODIS_MCD12Q2_" + year
+    return f"{FILE_PREFIX}_{year}_{target_suffix}"
 
 
 if EXPORT_TARGET == "reference_grid":
     export_tasks += export_collection_to_reference_grid(
         dataset,
         aoi,
-        lambda img: modis_file_name(img) + "_abmi1km",
+        modis_file_name,
         folder=DRIVE_FOLDER,
         reducer=ee.Reducer.mean(),
-        agg_base_m=AGG_BASE_M,
+        agg_base_m=BASE_SCALE_M,
+        agg_max_pixels=AGG_MAX_PIXELS,
     )
-elif EXPORT_TARGET == "native":
+else:
     export_tasks += export_image_collection(
         dataset,
         aoi,
         DRIVE_FOLDER,
-        EXPORT_SCALE,
-        EXPORT_CRS,
-        lambda img: modis_file_name(img) + "_native",
-    )
-else:
-    raise ValueError(
-        "Unknown EXPORT_TARGET: "
-        f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+        NATIVE_SCALE_M,
+        GRID_CRS,
+        modis_file_name,
     )
 
-# 6. Focal analysis ----
-# Exports focal (neighbourhood) statistics at 0/150/250 m
-# in EPSG:3978. The 0 m case renames bands with a "_0"
+# 5. Focal analysis ----
+# A separate product: focal (neighbourhood) statistics at
+# 0/150/250 m in FOCAL_CRS. The 0 m case appends a "_0" band
 # suffix but applies no smoothing.
 
-# 6.1 Zero-metre focal (no smoothing) ----
+
+def make_focal_file_name(kernel_size):
+    """Build the file-name function for one focal radius."""
+
+    def focal_file_name(img):
+        year = img.get("year").getInfo() or "unknown"
+        return f"{FILE_PREFIX}_{kernel_size}_{year}"
+
+    return focal_file_name
 
 
 def rename_zero_focal(img):
@@ -266,41 +241,21 @@ def rename_zero_focal(img):
     return img.rename(new_names)
 
 
-modis_0 = dataset.map(rename_zero_focal)
-
-
-def modis_file_name_0(img):
-    """File name for the 0 m focal export."""
-    year = img.get("year").getInfo() or "unknown"
-    return "MODIS_MCD12Q2__0_" + str(year)
-
-
 export_tasks += export_image_collection(
-    modis_0,
+    dataset.map(rename_zero_focal),
     aoi,
     DRIVE_FOLDER,
     FOCAL_SCALE,
     FOCAL_CRS,
-    modis_file_name_0,
+    make_focal_file_name(0),
 )
 
-# 6.2 Circular focal means (150 m, 250 m) ----
 for kernel_size in FOCAL_KERNELS:
     modis_focal = dataset.map(
         lambda img, k=kernel_size: focal_stats(
             img, k, "circle", ["year"]
         )
     )
-
-    def make_focal_file_name(k):
-        def focal_file_name(img):
-            year = img.get("year").getInfo() or "unknown"
-            return "MODIS_MCD12Q2__" + str(k) + "_" + str(
-                year
-            )
-
-        return focal_file_name
-
     export_tasks += export_image_collection(
         modis_focal,
         aoi,
@@ -310,11 +265,10 @@ for kernel_size in FOCAL_KERNELS:
         make_focal_file_name(kernel_size),
     )
 
-# 7. Compute usage report ----
-# Writes the profiled sections to gee_compute_reports/.
-# Collection exports start many batch tasks, so per-task
-# EECU totals are not logged here; monitor progress at
-# https://code.earthengine.google.com/tasks
+# 6. Compute usage report ----
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
+
 if WAIT_FOR_EXPORTS:
     for task in export_tasks:
         report.log_task(task)

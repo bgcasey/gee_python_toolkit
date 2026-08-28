@@ -145,12 +145,14 @@ It runs unmodified on the test AOI (the placeholder layer is FABDEM elevation), 
 | [_gee_config.py](python/_gee_config.py) | Shared configuration (Earth Engine project ID and default Drive export folder) used by all scripts. |
 | [_template_gee_export.py](python/_template_gee_export.py) | Starting point for a new export script — encodes the shared AOI, compute-ring, grid-aggregation, `EXPORT_TARGET`, and compute-report conventions. Copy it and fill in the `[EDIT]` markers. |
 | [fabdem.py](python/fabdem.py) | Mosaics the FABDEM DEM, clips to the US + Canada, and exports a GeoTIFF. |
+| [fabdem_elev_alberta.py](python/fabdem_elev_alberta.py) | Aggregates FABDEM elevation to mean elevation per ABMI 1 km cell for Alberta. |
+| [fabdem_slope_alberta.py](python/fabdem_slope_alberta.py) | Computes slope (degrees) for Alberta from the FABDEM DEM. |
+| [fabdem_tri_alberta.py](python/fabdem_tri_alberta.py) | Computes the Terrain Ruggedness Index (TRI, Riley et al. 1999) for Alberta from the FABDEM DEM. |
 | [fabdem_twi_alberta.py](python/fabdem_twi_alberta.py) | Computes the Topographic Wetness Index (TWI = ln(α/tanβ)) for Alberta using FABDEM slope and MERIT Hydro upslope area. |
 | [fabdem_tpi_alberta.py](python/fabdem_tpi_alberta.py) | Computes the Topographic Position Index (TPI, Weiss 2001) for Alberta from the FABDEM DEM. |
 | [fabdem_dev_alberta.py](python/fabdem_dev_alberta.py) | Computes DEV (deviation from mean elevation, De Reu et al. 2013) — TPI standardized by local relief — for Alberta from the FABDEM DEM. |
 | [global_geomorphometric_layers.py](python/global_geomorphometric_layers.py) | Loads Geomorpho90m geomorphometric variables, mosaics and clips them, and exports a multiband GeoTIFF for Alberta. |
 | [hydrologically_adjusted_elevation.py](python/hydrologically_adjusted_elevation.py) | Extracts Height Above Nearest Drainage (HAND) from MERIT Hydro and exports it for Alberta. |
-| [nrcan_topographic_indices.py](python/nrcan_topographic_indices.py) | Derives terrain metrics (elevation, slope, aspect, northness, eastness) from the NRCan/CDEM DEM. |
 | [hihydrosoil_v2.py](python/hihydrosoil_v2.py) | Exports HiHydroSoil v2.0 soil hydraulic properties (native ~250 m and 1000 m) and extracts point-level values to CSV. |
 | [soil_grids_250.py](python/soil_grids_250.py) | Exports ISRIC SoilGrids 250m v2.0 soil properties with unit rescaling and extracts point-level values to CSV. |
 | [landsat_time_series.py](python/landsat_time_series.py) | Builds an annual Landsat 5/7/8/9 spectral-index time series and exports multiband GeoTIFFs (native and focal scales). |
@@ -197,7 +199,6 @@ Scripts with `COMPUTE_REPORT` enabled write EECU usage summaries to `gee_compute
 | FABDEM (`projects/sat-io/open-datasets/FABDEM`) | `fabdem.py`, `fabdem_twi_alberta.py` |
 | MERIT Hydro (`MERIT/Hydro/v1_0_1`) | `fabdem_twi_alberta.py`, `hydrologically_adjusted_elevation.py` |
 | Geomorpho90m (`projects/sat-io/open-datasets/Geomorpho90m`) | `global_geomorphometric_layers.py` |
-| NRCan/CDEM | `nrcan_topographic_indices.py` |
 | HiHydroSoil v2.0 (FutureWater / sat-io) | `hihydrosoil_v2.py` |
 | SoilGrids 250m v2.0 (`projects/soilgrids-isric/*_mean`) | `soil_grids_250.py` |
 | Landsat 5/7/8/9 SR (`LANDSAT/*/C02/T1_L2`) | `landsat_time_series.py`, `landsat_time_series_to_poly.py` |

@@ -42,7 +42,10 @@ from utils.gee_utils import export_image_to_drive, initialize_ee
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 30  # meters
+TASK_PREFIX = "FABDEM_US_Canada"
+FILE_PREFIX = "fabdem_us_canada"
+
+BASE_SCALE_M = 30  # FABDEM's nominal resolution (m)
 EXPORT_CRS = "EPSG:4326"
 PRINT_STATS = False  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: US+Canada
@@ -58,21 +61,17 @@ WAIT_FOR_EXPORTS = False
 # Project ID is read from _gee_config.py
 initialize_ee()
 
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full US + Canada run.
-report = ComputeReport(
-    "fabdem",
-    enabled=COMPUTE_REPORT,
-)
+# 1.3 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
 
 # 2. Define study area ----
-# This section defines the export geometry. It uses a
-# small test polygon when USE_TEST_AOI is True; otherwise
-# it filters the FAO GAUL countries for the US and Canada.
-# Clipping directly to the feature collection avoids
-# geometry edge limits.
+# This script covers the US and Canada, not Alberta, so it
+# does not use define_study_area or the ABMI reference grid.
+# Clipping directly to the feature collection avoids geometry
+# edge limits.
 
 if USE_TEST_AOI:
     # Small aoi for testing purposes
@@ -94,66 +93,58 @@ else:
     )
 
 # The export region and stats reducer both need an
-# ee.Geometry; derive one from the AOI (which may be a
-# FeatureCollection when USE_TEST_AOI is False).
-if USE_TEST_AOI:
-    aoi_geom = aoi
-else:
-    aoi_geom = aoi.geometry()
+# ee.Geometry; aoi is a FeatureCollection when USE_TEST_AOI
+# is False.
+aoi_geom = aoi if USE_TEST_AOI else aoi.geometry()
 
-# 3. Create and clip elevation mosaic ----
-# This section mosaics the FABDEM collection and clips it
-# to the study area. It produces a clipped elevation image.
-
-fabdem = ee.ImageCollection(
-    "projects/sat-io/open-datasets/FABDEM"
+# 3. Build the layer ----
+# Mosaicked FABDEM clipped to the study area.
+layer = (
+    ee.ImageCollection("projects/sat-io/open-datasets/FABDEM")
+    .mosaic()
+    .setDefaultProjection("EPSG:3402", None, BASE_SCALE_M)
+    .clip(aoi)
 )
-elev = fabdem.mosaic().setDefaultProjection(
-    "EPSG:3402", None, 30
-)
-elev_clipped = elev.clip(aoi)
 
-# 3.1 Check min and max values (optional) ----
-# Also runs when COMPUTE_REPORT is on: Earth Engine is
-# lazy, so the profiler needs an evaluated computation
-# (getInfo) to measure per-algorithm EECU usage.
+# 3.1 Check layer values (optional) ----
+# Earth Engine is lazy, so the profiler needs an evaluated
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on.
 if PRINT_STATS or COMPUTE_REPORT:
     with report.section("Elevation min/max (reduceRegion)"):
-        stats = elev_clipped.reduceRegion(
+        stats = layer.reduceRegion(
             reducer=ee.Reducer.minMax(),
             geometry=aoi_geom,
-            scale=EXPORT_SCALE,
+            scale=BASE_SCALE_M,
             maxPixels=1e13,
             bestEffort=True,
         ).getInfo()
-    print("Elevation min and max values:", stats)
+    print("Elevation min/max:", stats)
 
-# 4. Export data ----
-# This section exports the clipped elevation image to
-# Google Drive as a GeoTIFF. Set wait=True to block until
-# the task finishes; otherwise monitor progress at
+# 4. Export ----
+# Monitor progress at
 # https://code.earthengine.google.com/tasks
-
-task = export_image_to_drive(
-    image=elev_clipped,
-    description="FABDEM_US_Canada",
-    region=aoi_geom,
-    folder=DRIVE_FOLDER,
-    file_name_prefix="fabdem_us_canada",
-    scale=EXPORT_SCALE,
-    crs=EXPORT_CRS,
-    max_pixels=1e13,
-    wait=False,
+export_tasks.append(
+    export_image_to_drive(
+        image=layer,
+        description=TASK_PREFIX,
+        region=aoi_geom,
+        folder=DRIVE_FOLDER,
+        file_name_prefix=FILE_PREFIX,
+        scale=BASE_SCALE_M,
+        crs=EXPORT_CRS,
+        max_pixels=1e13,
+        wait=False,
+    )
 )
 
 # 5. Compute usage report ----
-# This section waits for the export to finish, records
-# its total EECU-seconds, and writes the txt report to
-# gee_compute_reports/. Note: a full US + Canada export
-# can take hours; for a quick profile use the test AOI.
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
 
 if WAIT_FOR_EXPORTS:
-    report.log_task(task)
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----

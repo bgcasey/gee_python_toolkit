@@ -4,17 +4,22 @@
 # created: 2026-07-10
 # inputs:
 #   - MERIT Hydro (MERIT/Hydro/v1_0_1)
-#   - AB2020 provincial boundary (EE asset)
+#   - AB2020 provincial boundary (Earth Engine asset;
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
 # outputs:
-#   - HAND GeoTIFF for Alberta, at native (~90 m) or on the
-#     ABMI 1 km reference grid, per EXPORT_TARGET (exported to
-#     Google Drive).
+#   - HAND GeoTIFF for Alberta, either aligned to the ABMI
+#     1 km reference grid or at BASE_SCALE_M resolution,
+#     selected by EXPORT_TARGET (exported to Google Drive)
 # notes:
-#   This script extracts the hydrologically adjusted
-#   elevations (Height Above Nearest Drainage - HAND) from
-#   the MERIT Hydro dataset, clips to the AOI, and exports
-#   the HAND band to Google Drive. Map visualization layers
-#   from the original GEE JavaScript are dropped.
+#   Height Above Nearest Drainage, the 'hnd' band of MERIT
+#   Hydro. HAND is a stored (pyramided) band, so ~90 m -> 1 km
+#   is well under Earth Engine's per-tile reprojection limit.
+#
+#   Data citation:
+#   Yamazaki, D., et al. (2019). MERIT Hydro: A
+#   high-resolution global hydrography map based on latest
+#   topography datasets. Water Resources Research, 55,
+#   5053-5073. doi:10.1029/2019WR024873
 #
 #   Setup (once):
 #     pip install earthengine-api
@@ -24,6 +29,7 @@
 #   script.
 # ---
 
+import math
 import os
 import sys
 
@@ -33,9 +39,10 @@ import ee
 # directory VS Code runs the script from
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _gee_config import DRIVE_FOLDER, PROVINCIAL_BOUNDARY_ASSET
+from _gee_config import COARSE_SCALE, DRIVE_FOLDER, GRID_CRS
 from utils.compute_report import ComputeReport
 from utils.gee_utils import (
+    define_study_area,
     export_image_to_drive,
     export_to_reference_grid,
     initialize_ee,
@@ -44,148 +51,141 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-EXPORT_SCALE = 92.77  # meters (MERIT Hydro native ~90 m)
-EXPORT_CRS = "EPSG:3400"  # AB 10-TM (Forest)
-# Raster export target. "native" exports the ~90 m HAND image;
-# "reference_grid" aggregates (area mean) onto the ABMI 1 km
-# grid so it stacks with the other 1 km covariates. HAND is a
-# stored MERIT Hydro band (pyramided), so 90 m -> 1 km is well
-# under Earth Engine's per-tile reprojection limit.
+BAND_NAME = "HAND"
+TASK_PREFIX = "HAND_AB"
+FILE_PREFIX = "hydrologically_adjusted_elevations"
+
+SOURCE_ASSET = "MERIT/Hydro/v1_0_1"
+SOURCE_BAND = "hnd"
+
+# MERIT Hydro's native grid spacing. native_scale(ee.Image(
+# SOURCE_ASSET)) reports 92.766 if you prefer it exact.
+BASE_SCALE_M = 92.77
+
+# HAND is read as a stored value, so no neighbourhood.
+FOCAL_REACH_M = 0
+
+# "native" skips the aggregation and writes BASE_SCALE_M
+# pixels in the grid CRS, ungridded - useful for inspecting
+# the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-# Compute ring grown around the aoi before the source is
-# clipped, sized at 2x the output scale. Every output pixel -
-# a 1 km grid cell or a native pixel - is then built from a
-# full neighbourhood rather than one truncated at the aoi
-# edge; a 1 km cell can touch the aoi at a corner and still
-# reach a full diagonal (1414 m) beyond it. The exported
-# image is clipped back to the plain aoi, so the ring never
-# widens the output.
-COARSE_SCALE = 1000  # ABMI reference grid cell (m)
-AGG_BUFFER_M = 2 * (
-    COARSE_SCALE
-    if EXPORT_TARGET == "reference_grid"
-    else EXPORT_SCALE
-)
-BUFFER_MAX_ERROR_M = 100
-PRINT_STATS = True  # min/max check (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
-# Block until every export task finishes so its batch
-# EECU-seconds land in the compute report. Costs the full
-# export runtime (hours for a province-wide run), so keep it
-# False for production runs and turn it on when profiling a
-# test AOI.
+# Costs the full export runtime (hours province-wide), so
+# turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
 
-# 1.2 Initialize Earth Engine ----
-# Project ID is read from _gee_config.py
-initialize_ee()
-
-# 1.3 Set up compute usage report ----
-# Profiles EECU usage per section and per export task.
-# Best used with USE_TEST_AOI = True to find choke
-# points cheaply before a full-province run.
-report = ComputeReport(
-    "hydrologically_adjusted_elevation",
-    enabled=COMPUTE_REPORT,
-)
-
-# 2. Define study area ----
-# This section defines the export geometry. It uses a
-# small test polygon when USE_TEST_AOI is True; otherwise
-# it uses the AB2020 provincial boundary asset.
-
-if USE_TEST_AOI:
-    # Small aoi for testing purposes
-    aoi = ee.Geometry.Polygon([
-        [-113.5, 55.5],  # Top-left corner
-        [-113.5, 55.0],  # Bottom-left corner
-        [-112.8, 55.0],  # Bottom-right corner
-        [-112.8, 55.5],  # Top-right corner
-    ])
-else:
-    aoi = ee.FeatureCollection(
-        PROVINCIAL_BOUNDARY_ASSET
-    ).geometry()
-
-# 3. Extract HAND band ----
-# This section clips the MERIT Hydro image to the AOI and
-# selects the 'hnd' (Height Above Nearest Drainage) band,
-# renaming it to 'HAND'. It produces a single-band image.
-
-merit_hydro = ee.Image("MERIT/Hydro/v1_0_1")
-# Aggregation reads from the ring (AGG_BUFFER_M); the 1 km
-# result is clipped back to the plain aoi downstream.
-clip_geom = (
-    aoi.buffer(AGG_BUFFER_M, BUFFER_MAX_ERROR_M)
-    if AGG_BUFFER_M
-    else aoi
-)
-
-hand = merit_hydro.clip(clip_geom).select("hnd").rename("HAND")
-
-# 3.1 Check min and max values (optional) ----
-# Also runs when COMPUTE_REPORT is on: Earth Engine is
-# lazy, so the profiler needs an evaluated computation
-# (getInfo) to measure per-algorithm EECU usage.
-if PRINT_STATS or COMPUTE_REPORT:
-    with report.section("HAND min/max (reduceRegion)"):
-        stats = hand.reduceRegion(
-            reducer=ee.Reducer.minMax(),
-            geometry=aoi,
-            scale=EXPORT_SCALE,
-            maxPixels=1e13,
-            bestEffort=True,
-        ).getInfo()
-    print("HAND min and max values:", stats)
-
-# 4. Export data ----
-# Export at the target chosen by EXPORT_TARGET. "native" writes
-# the ~90 m HAND image; "reference_grid" aggregates it (area
-# mean) onto the ABMI 1 km grid. setDefaultProjection pins the
-# native base so reduceResolution knows the input resolution.
-# Set wait=True to block; otherwise monitor progress at
-# https://code.earthengine.google.com/tasks
-
-if EXPORT_TARGET == "reference_grid":
-    task = export_to_reference_grid(
-        image=hand.setDefaultProjection(
-            crs=EXPORT_CRS, scale=EXPORT_SCALE
-        ),
-        aoi=aoi,
-        description="HAND_AB_abmi1km",
-        folder=DRIVE_FOLDER,
-        file_name_prefix="hydrologically_adjusted_elevations_abmi1km",
-        aggregate=True,
-        wait=False,
-    )
-elif EXPORT_TARGET == "native":
-    task = export_image_to_drive(
-        image=hand.clip(aoi),
-        description="HAND_AB_native",
-        region=aoi,
-        folder=DRIVE_FOLDER,
-        file_name_prefix="hydrologically_adjusted_elevations_native",
-        scale=EXPORT_SCALE,
-        crs=EXPORT_CRS,
-        max_pixels=1e13,
-        wait=False,
-    )
-else:
+# 1.2 Validate parameters ----
+if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
     )
 
+# 1.3 Initialize Earth Engine ----
+# Project ID is read from _gee_config.py
+initialize_ee()
+
+# 1.4 Derived scales ----
+# AGG_BUFFER_M is 2x the output scale, so a 1 km cell touching
+# the aoi at a corner still reads a full diagonal (1414 m)
+# beyond it; AGG_MAX_PIXELS is reduceResolution's per-cell
+# input budget, +2 covering a cell that straddles a base pixel
+# on each side.
+AGG_BUFFER_M = 2 * (
+    COARSE_SCALE
+    if EXPORT_TARGET == "reference_grid"
+    else BASE_SCALE_M
+)
+COMPUTE_BUFFER_M = max(FOCAL_REACH_M, AGG_BUFFER_M)
+AGG_MAX_PIXELS = (
+    math.ceil(COARSE_SCALE / BASE_SCALE_M) + 2
+) ** 2
+
+# 1.5 Set up run bookkeeping ----
+# report profiles compute usage; export_tasks collects the
+# export tasks it logs.
+report = ComputeReport(FILE_PREFIX, enabled=COMPUTE_REPORT)
+export_tasks = []
+
+# 2. Define study area ----
+# aoi is the export / crop boundary; aoi_compute adds the ring
+# the source is read over.
+aoi, aoi_compute = define_study_area(
+    use_test_aoi=USE_TEST_AOI,
+    buffer_m=COMPUTE_BUFFER_M,
+)
+
+# 3. Build the layer ----
+# Reads over aoi_compute, never aoi; clipped back in section 4.
+# setDefaultProjection pins the native base so reduceResolution
+# knows the input resolution.
+layer = (
+    ee.Image(SOURCE_ASSET)
+    .select(SOURCE_BAND)
+    .clip(aoi_compute)
+    .setDefaultProjection(crs=GRID_CRS, scale=BASE_SCALE_M)
+    .rename(BAND_NAME)
+)
+
+# 3.1 Check layer values (optional) ----
+# Earth Engine is lazy, so the profiler needs an evaluated
+# computation to measure EECU usage; this also runs when
+# COMPUTE_REPORT is on.
+if PRINT_STATS or COMPUTE_REPORT:
+    with report.section(f"{BAND_NAME} min/max (reduceRegion)"):
+        stats = layer.reduceRegion(
+            reducer=ee.Reducer.minMax(),
+            geometry=aoi,
+            scale=BASE_SCALE_M,
+            maxPixels=1e13,
+            bestEffort=True,
+        ).getInfo()
+    print(f"{BAND_NAME} min/max:", stats)
+
+# 4. Aggregate to the grid and export ----
+# Monitor progress at
+# https://code.earthengine.google.com/tasks
+target_suffix = (
+    "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
+)
+
+if EXPORT_TARGET == "reference_grid":
+    export_tasks.append(
+        export_to_reference_grid(
+            image=layer,
+            aoi=aoi,
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            agg_max_pixels=AGG_MAX_PIXELS,
+            wait=False,
+        )
+    )
+else:
+    export_tasks.append(
+        export_image_to_drive(
+            image=layer.clip(aoi),
+            description=f"{TASK_PREFIX}_{target_suffix}",
+            region=aoi,
+            folder=DRIVE_FOLDER,
+            file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
+            scale=BASE_SCALE_M,
+            crs=GRID_CRS,
+            max_pixels=1e13,
+            wait=False,
+        )
+    )
+
 # 5. Compute usage report ----
-# This section waits for the export to finish, records
-# its total EECU-seconds, and writes the txt report to
-# gee_compute_reports/. Note: a full-province export can
-# take hours; for a quick profile use the test AOI.
+# Records each task's total EECU-seconds and writes the txt
+# report to gee_compute_reports/.
 
 if WAIT_FOR_EXPORTS:
-    report.log_task(task)
+    for task in export_tasks:
+        report.log_task(task)
 report.write()
 
 # End of script ----
