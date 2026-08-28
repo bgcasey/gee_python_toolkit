@@ -292,6 +292,69 @@ def to_reference_grid(
     return out.toFloat().clip(aoi)
 
 
+def fill_gaps_nearest(
+    image,
+    max_px=0,
+    reducer=None,
+    aoi=None,
+):
+    """Fill masked cells from their nearest valid neighbours.
+
+    Gap fill for an image already on the ABMI 1 km grid (what
+    to_reference_grid returns). Each pass gives a masked cell
+    the reducer's result over its 3x3 neighbourhood and leaves
+    cells that already hold a value untouched, so the fill grows
+    one ring per pass and a gap takes its value from the nearest
+    data. Under the default mean a deep fill comes out smoothed,
+    each ring averaging the one outside it; ee.Reducer.mode()
+    returns exact class codes at any depth. Cells further than
+    max_px from any valid cell stay NA.
+
+    Args:
+        image (ee.Image): Image on the 1 km reference grid.
+        max_px (int): Maximum fill distance in grid cells, one
+            neighbourhood pass per cell, closing a hole up to
+            2 * max_px cells wide. 0 returns image unchanged.
+        reducer (ee.Reducer): Neighbourhood reducer; defaults to
+            ee.Reducer.mean(). Pass the reducer the image was
+            aggregated with (ee.Reducer.mode() for class codes).
+        aoi (ee.Geometry): Boundary to re-clip to, so the fill
+            cannot grow past the AOI edge. Skipped when None.
+
+    Returns:
+        ee.Image: Image with gaps up to max_px cells filled.
+    """
+    from _gee_config import GRID_CRS, GRID_CRS_TRANSFORM
+
+    max_px = int(max_px or 0)
+    if max_px <= 0:
+        return image
+
+    reducer = reducer if reducer is not None else ee.Reducer.mean()
+    band_names = image.bandNames()
+    kernel = ee.Kernel.square(radius=1, units="pixels")
+    filled = image.reproject(
+        crs=GRID_CRS, crsTransform=GRID_CRS_TRANSFORM
+    )
+
+    # reduceNeighborhood measures the kernel in pixels, so the
+    # grid is pinned before each pass.
+    for _ in range(max_px):
+        # skipMasked=False reduces at masked cells too; the
+        # reducer still ignores masked inputs.
+        neighbours = filled.reduceNeighborhood(
+            reducer=reducer, kernel=kernel, skipMasked=False
+        ).rename(band_names)
+        # unmask writes only where the mask is exactly zero.
+        filled = filled.unmask(neighbours).reproject(
+            crs=GRID_CRS, crsTransform=GRID_CRS_TRANSFORM
+        )
+
+    if aoi is not None:
+        filled = filled.clip(aoi)
+    return filled.rename(band_names)
+
+
 def export_to_reference_grid(
     image,
     aoi,
@@ -302,6 +365,7 @@ def export_to_reference_grid(
     reducer=None,
     agg_max_pixels=1024,
     round_values=False,
+    fill_gaps_px=0,
     max_pixels=1e13,
     wait=False,
 ):
@@ -324,6 +388,9 @@ def export_to_reference_grid(
         reducer (ee.Reducer): Passed to to_reference_grid.
         agg_max_pixels (int): Passed to to_reference_grid.
         round_values (bool): Passed to to_reference_grid.
+        fill_gaps_px (int): Nearest-neighbour gap fill applied
+            to the gridded image before export, in grid cells
+            (see fill_gaps_nearest). 0 disables it.
         max_pixels (float): Export pixel budget.
         wait (bool): Block until the task finishes.
 
@@ -338,6 +405,11 @@ def export_to_reference_grid(
         )
     else:
         out = image.clip(aoi)
+
+    if fill_gaps_px:
+        out = fill_gaps_nearest(
+            out, max_px=fill_gaps_px, reducer=reducer, aoi=aoi
+        )
 
     return export_image_to_drive(
         image=out,
@@ -361,6 +433,7 @@ def export_collection_to_reference_grid(
     agg_base_m=None,
     agg_max_pixels=1024,
     round_values=False,
+    fill_gaps_px=0,
     max_pixels=1e13,
 ):
     """Aggregate each image in a collection onto the ABMI grid.
@@ -393,6 +466,9 @@ def export_collection_to_reference_grid(
             pinned to before aggregating (see above).
         agg_max_pixels (int): reduceResolution maxPixels.
         round_values (bool): Round to integer before storing.
+        fill_gaps_px (int): Nearest-neighbour gap fill applied
+            to each gridded image before export, in grid cells
+            (see fill_gaps_nearest). 0 disables it.
         max_pixels (float): Export pixel budget per image.
 
     Returns:
@@ -418,6 +494,13 @@ def export_collection_to_reference_grid(
             gridded = to_reference_grid(
                 img, aoi, reducer, agg_max_pixels, round_values
             )
+            if fill_gaps_px:
+                gridded = fill_gaps_nearest(
+                    gridded,
+                    max_px=fill_gaps_px,
+                    reducer=reducer,
+                    aoi=aoi,
+                )
 
             task = ee.batch.Export.image.toDrive(
                 image=gridded,

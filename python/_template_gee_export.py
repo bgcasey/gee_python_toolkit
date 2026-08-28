@@ -28,6 +28,9 @@
 #     as 0 with no nodata flag, so they read downstream as
 #     valid zeros. float32 makes them NaN -> NA; class codes
 #     survive it exactly.
+#   - A 1 km cell is NA only where every base pixel under it
+#     is: reduceResolution gives masked pixels zero weight.
+#     FILL_GAPS_PX interpolates those cells.
 #   - A 30 m base fails a full-province run with
 #     "Reprojection output too large": filling one 1 km output
 #     tile forces the base compute over ~256 km, about 8600 px
@@ -103,6 +106,10 @@ FOCAL_REACH_M = 0
 # [EDIT] Class codes aggregate by mode, not by mean.
 IS_CATEGORICAL = False
 
+# [EDIT] Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 0
+
 # "native" skips the aggregation and writes BASE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
@@ -120,6 +127,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -237,6 +248,7 @@ if EXPORT_TARGET == "reference_grid":
             ),
             agg_max_pixels=AGG_MAX_PIXELS,
             round_values=IS_CATEGORICAL,
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         )
     )
