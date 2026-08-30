@@ -144,8 +144,8 @@ It runs unmodified on the test AOI (the placeholder layer is FABDEM elevation), 
 |------|-------------|
 | [_gee_config.py](python/_gee_config.py) | Shared configuration (Earth Engine project ID and default Drive export folder) used by all scripts. |
 | [_template_gee_export.py](python/_template_gee_export.py) | Starting point for a new export script — encodes the shared AOI, compute-ring, grid-aggregation, `EXPORT_TARGET`, and compute-report conventions. Copy it and fill in the `[EDIT]` markers. |
-| [fabdem.py](python/fabdem.py) | Mosaics the FABDEM DEM, clips to the US + Canada, and exports a GeoTIFF. |
 | [fabdem_elev_alberta.py](python/fabdem_elev_alberta.py) | Aggregates FABDEM elevation to mean elevation per ABMI 1 km cell for Alberta. |
+| [fabdem_elev_us_canada.py](python/fabdem_elev_us_canada.py) | Mosaics the FABDEM DEM, clips to the US + Canada, and exports a GeoTIFF. |
 | [fabdem_slope_alberta.py](python/fabdem_slope_alberta.py) | Computes slope (degrees) for Alberta from the FABDEM DEM. |
 | [fabdem_tri_alberta.py](python/fabdem_tri_alberta.py) | Computes the Terrain Ruggedness Index (TRI, Riley et al. 1999) for Alberta from the FABDEM DEM. |
 | [fabdem_twi_alberta.py](python/fabdem_twi_alberta.py) | Computes the Topographic Wetness Index (TWI = ln(α/tanβ)) for Alberta using FABDEM slope and MERIT Hydro upslope area. |
@@ -196,7 +196,7 @@ Scripts with `COMPUTE_REPORT` enabled write EECU usage summaries to `gee_compute
 
 | Dataset | Used by |
 |---------|---------|
-| FABDEM (`projects/sat-io/open-datasets/FABDEM`) | `fabdem.py`, `fabdem_twi_alberta.py` |
+| FABDEM (`projects/sat-io/open-datasets/FABDEM`) | `fabdem_elev_us_canada.py`, `fabdem_twi_alberta.py` |
 | MERIT Hydro (`MERIT/Hydro/v1_0_1`) | `fabdem_twi_alberta.py`, `hydrologically_adjusted_elevation.py` |
 | Geomorpho90m (`projects/sat-io/open-datasets/Geomorpho90m`) | `global_geomorphometric_layers.py` |
 | HiHydroSoil v2.0 (FutureWater / sat-io) | `hihydrosoil_v2.py` |
