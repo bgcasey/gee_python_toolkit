@@ -240,20 +240,59 @@ def fabdem_elevation(aoi_compute, base_m=50):
     )
 
 
+def reference_grid_mask():
+    """The ABMI 1 km reference grid as a mask image.
+
+    Reads GRID_ASSET -- the uploaded grid_1km.tif, 1 over the
+    grid's Alberta cells and masked elsewhere -- and pins it to
+    the grid projection. Use it with updateMask() in place of
+    clipping to the provincial boundary: clip() renders a
+    fractional coverage mask and drops cells that only clip the
+    province edge, leaving them NA in the export even though
+    ab_grid() holds them.
+
+    updateMask() also leaves the image footprint intact, where
+    clip() shrinks it to the geometry, so a later
+    fill_gaps_nearest() can still write into masked cells.
+
+    Returns:
+        ee.Image: 1 over the grid's cells, masked elsewhere.
+    """
+    from _gee_config import GRID_ASSET, GRID_CRS, GRID_CRS_TRANSFORM
+
+    if not GRID_ASSET:
+        raise ValueError(
+            "GRID_ASSET is not set in _gee_config.py. Upload "
+            "sciSpatialR's inst/extdata/grid_1km.tif as an "
+            "Earth Engine image asset (no-data value 0) and "
+            "set GRID_ASSET to its id."
+        )
+    return (
+        ee.Image(GRID_ASSET)
+        .gt(0)
+        .reproject(crs=GRID_CRS, crsTransform=GRID_CRS_TRANSFORM)
+    )
+
+
 def to_reference_grid(
     image,
     aoi,
     reducer=None,
     agg_max_pixels=1024,
     round_values=False,
+    grid_mask=True,
 ):
     """Aggregate a computed image onto the ABMI 1 km grid.
 
     reduceResolution aggregates the image to the 1 km reference
-    cells; the result is cast to float32 and clipped to aoi. The
-    export (export_to_reference_grid, or export_image_to_drive
-    with the grid crs + crsTransform) is what pins the cells to
-    the grid.
+    cells and the result is cast to float32. The export
+    (export_to_reference_grid, or export_image_to_drive with the
+    grid crs + crsTransform) is what pins the cells to the grid.
+
+    grid_mask=True restricts the result to the reference grid's
+    own cells (reference_grid_mask); aoi is then only the export
+    region. Set it False to fall back on clipping to aoi, which
+    drops cells that merely clip the province edge.
 
     IMPORTANT: the input image must already be pinned to a
     metric base projection FINER than 1 km via
@@ -269,7 +308,8 @@ def to_reference_grid(
 
     Args:
         image (ee.Image): Image at a metric base projection.
-        aoi (ee.Geometry): Boundary to crop the result to.
+        aoi (ee.Geometry): Boundary to crop the result to when
+            grid_mask is False; ignored otherwise.
         reducer (ee.Reducer): Aggregation reducer; defaults to
             ee.Reducer.mean() (area-weighted mean, the right
             downsample for a continuous surface).
@@ -279,9 +319,11 @@ def to_reference_grid(
         round_values (bool): Round to integer before storing
             (e.g. TPI in whole metres). Leave False for
             continuous data (slope degrees, ratios, ...).
+        grid_mask (bool): Mask to the reference grid's cells
+            instead of clipping to aoi.
 
     Returns:
-        ee.Image: 1 km, float32, clipped to aoi.
+        ee.Image: 1 km, float32, on the reference grid's cells.
     """
     reducer = reducer if reducer is not None else ee.Reducer.mean()
     out = image.reduceResolution(
@@ -289,7 +331,10 @@ def to_reference_grid(
     )
     if round_values:
         out = out.round()
-    return out.toFloat().clip(aoi)
+    out = out.toFloat()
+    if grid_mask:
+        return out.updateMask(reference_grid_mask())
+    return out.clip(aoi)
 
 
 def fill_gaps_nearest(
@@ -366,6 +411,7 @@ def export_to_reference_grid(
     agg_max_pixels=1024,
     round_values=False,
     fill_gaps_px=0,
+    grid_mask=True,
     max_pixels=1e13,
     wait=False,
 ):
@@ -391,6 +437,10 @@ def export_to_reference_grid(
         fill_gaps_px (int): Nearest-neighbour gap fill applied
             to the gridded image before export, in grid cells
             (see fill_gaps_nearest). 0 disables it.
+        grid_mask (bool): Mask to the reference grid's cells
+            (reference_grid_mask) instead of clipping to aoi, so
+            the export carries exactly the cells ab_grid() holds.
+            aoi then only bounds the export region.
         max_pixels (float): Export pixel budget.
         wait (bool): Block until the task finishes.
 
@@ -399,22 +449,42 @@ def export_to_reference_grid(
     """
     from _gee_config import GRID_CRS, GRID_CRS_TRANSFORM
 
+    grid = reference_grid_mask() if grid_mask else None
+
     if aggregate:
         out = to_reference_grid(
-            image, aoi, reducer, agg_max_pixels, round_values
+            image,
+            aoi,
+            reducer,
+            agg_max_pixels,
+            round_values,
+            grid_mask=grid_mask,
         )
+    elif grid is not None:
+        out = image.updateMask(grid)
     else:
         out = image.clip(aoi)
 
     if fill_gaps_px:
+        # The grid mask is re-applied after the fill so filled
+        # cells cannot spread past the grid's own cells.
         out = fill_gaps_nearest(
-            out, max_px=fill_gaps_px, reducer=reducer, aoi=aoi
+            out,
+            max_px=fill_gaps_px,
+            reducer=reducer,
+            aoi=None if grid is not None else aoi,
         )
+        if grid is not None:
+            out = out.updateMask(grid)
+
+    # A polygon region re-imposes the coverage mask the grid is
+    # meant to replace, so the grid path exports over the bounds.
+    region = aoi.bounds(1, GRID_CRS) if grid is not None else aoi
 
     return export_image_to_drive(
         image=out,
         description=description,
-        region=aoi,
+        region=region,
         folder=folder,
         file_name_prefix=file_name_prefix,
         crs=GRID_CRS,
@@ -434,6 +504,7 @@ def export_collection_to_reference_grid(
     agg_max_pixels=1024,
     round_values=False,
     fill_gaps_px=0,
+    grid_mask=True,
     max_pixels=1e13,
 ):
     """Aggregate each image in a collection onto the ABMI grid.
@@ -469,12 +540,18 @@ def export_collection_to_reference_grid(
         fill_gaps_px (int): Nearest-neighbour gap fill applied
             to each gridded image before export, in grid cells
             (see fill_gaps_nearest). 0 disables it.
+        grid_mask (bool): Mask each image to the reference grid's
+            cells instead of clipping to aoi (see
+            export_to_reference_grid).
         max_pixels (float): Export pixel budget per image.
 
     Returns:
         list: The started ee.batch.Task export tasks.
     """
     from _gee_config import GRID_CRS, GRID_CRS_TRANSFORM
+
+    grid = reference_grid_mask() if grid_mask else None
+    region = aoi.bounds(1, GRID_CRS) if grid is not None else aoi
 
     col_list = collection.toList(collection.size())
     size = collection.size().getInfo()
@@ -492,22 +569,29 @@ def export_collection_to_reference_grid(
                     crs=GRID_CRS, scale=agg_base_m
                 )
             gridded = to_reference_grid(
-                img, aoi, reducer, agg_max_pixels, round_values
+                img,
+                aoi,
+                reducer,
+                agg_max_pixels,
+                round_values,
+                grid_mask=grid_mask,
             )
             if fill_gaps_px:
                 gridded = fill_gaps_nearest(
                     gridded,
                     max_px=fill_gaps_px,
                     reducer=reducer,
-                    aoi=aoi,
+                    aoi=None if grid is not None else aoi,
                 )
+                if grid is not None:
+                    gridded = gridded.updateMask(grid)
 
             task = ee.batch.Export.image.toDrive(
                 image=gridded,
                 description=file_name,
                 folder=folder,
                 fileNamePrefix=file_name,
-                region=aoi,
+                region=region,
                 crs=GRID_CRS,
                 crsTransform=GRID_CRS_TRANSFORM,
                 maxPixels=max_pixels,
