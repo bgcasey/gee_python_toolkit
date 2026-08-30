@@ -79,7 +79,7 @@ FILE_PREFIX = "fabdem_dev_alberta"
 # Resolution DEV is computed at before aggregating to 1 km.
 # Keep it <= ~min(DEV_RADII) / 10 so the focal window is well
 # resolved.
-BASE_SCALE_M = 50
+BASE_SCALE_M = 40
 
 DEV_RADII = [250, 1000, 2000]  # one export per radius
 DEV_WINDOW_SHAPE = "circle"  # "circle" or "square"
@@ -92,12 +92,16 @@ FOCAL_REACH_M = max(DEV_RADII) * (
     BASE_SCALE_M if DEV_UNITS == "pixels" else 1
 )
 
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 0
+
 # Applied to every radius. "native" skips the aggregation and
 # writes BASE_SCALE_M pixels in the grid CRS, ungridded -
 # useful for inspecting the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
@@ -108,6 +112,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 if DEV_WINDOW_SHAPE not in ("circle", "square"):
     raise ValueError(
@@ -198,6 +206,7 @@ for radius in DEV_RADII:
                 folder=DRIVE_FOLDER,
                 file_name_prefix=file_name_prefix,
                 agg_max_pixels=AGG_MAX_PIXELS,
+                fill_gaps_px=FILL_GAPS_PX,
                 wait=False,
             )
         )

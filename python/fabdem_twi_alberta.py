@@ -69,27 +69,35 @@ TASK_PREFIX = "FABDEM_TWI_Alberta"
 FILE_PREFIX = "fabdem_twi_alberta"
 
 # Resolution slope is computed at before aggregating to 1 km.
-BASE_SCALE_M = 50
+BASE_SCALE_M = 30
 
 # ee.Terrain.slope reads a 3x3 window, so one base pixel.
 FOCAL_REACH_M = BASE_SCALE_M
+
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 0
 
 # "native" skips the aggregation and writes BASE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
-
+    
 # 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -161,6 +169,7 @@ if EXPORT_TARGET == "reference_grid":
             folder=DRIVE_FOLDER,
             file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
             agg_max_pixels=AGG_MAX_PIXELS,
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         )
     )

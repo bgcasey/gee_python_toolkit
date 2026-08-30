@@ -91,6 +91,10 @@ FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
 
 FOCAL_REACH_M = max(FOCAL_KERNELS)
 
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 20
+
 # "native" skips the aggregation and writes NATIVE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
@@ -108,6 +112,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -218,6 +226,7 @@ if EXPORT_TARGET == "reference_grid":
         reducer=ee.Reducer.mean(),
         agg_base_m=BASE_SCALE_M,
         agg_max_pixels=AGG_MAX_PIXELS,
+        fill_gaps_px=FILL_GAPS_PX,
     )
 else:
     export_tasks += export_image_collection(

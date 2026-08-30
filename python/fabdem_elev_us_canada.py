@@ -1,5 +1,5 @@
 # ---
-# title:   Download FABDEM for US and Canada
+# title:   FABDEM Elevation for US and Canada
 # author:  Brendan Casey
 # created: 2026-07-10
 # inputs:

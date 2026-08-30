@@ -77,7 +77,7 @@ FILE_PREFIX = "fabdem_tpi_alberta"
 # Resolution TPI is computed at before aggregating to 1 km.
 BASE_SCALE_M = 40
 
-TPI_RADII = [250]  # one export per radius
+TPI_RADII = [250, 1000, 2000]  # one export per radius
 TPI_WINDOW_SHAPE = "circle"  # "circle" or "square"
 TPI_UNITS = "meters"  # "meters" or "pixels"
 
@@ -86,6 +86,10 @@ TPI_UNITS = "meters"  # "meters" or "pixels"
 FOCAL_REACH_M = max(TPI_RADII) * (
     BASE_SCALE_M if TPI_UNITS == "pixels" else 1
 )
+
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 0
 
 # Applied to every radius. "native" skips the aggregation and
 # writes BASE_SCALE_M pixels in the grid CRS, ungridded -
@@ -103,6 +107,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -172,6 +180,7 @@ for radius in TPI_RADII:
                 file_name_prefix=file_name_prefix,
                 agg_max_pixels=AGG_MAX_PIXELS,
                 round_values=True,
+                fill_gaps_px=FILL_GAPS_PX,
                 wait=False,
             )
         )

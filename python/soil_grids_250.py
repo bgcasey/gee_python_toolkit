@@ -98,6 +98,10 @@ BASE_SCALE_M = 250
 # Each value is read as a stored pixel, so no neighbourhood.
 FOCAL_REACH_M = 0
 
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 20
+
 # Raster export target. "native" exports the ~250 m SoilGrids
 # image in EPSG:3400 (ungridded). "reference_grid" aggregates
 # to the ABMI 1 km reference grid (EPSG:3400) by area mean via
@@ -158,7 +162,7 @@ EXTRACT_SCALE = BASE_SCALE_M  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 100  # Match the number of batches assigned in R
 
-PRINT_STATS = True  # min/max check (slow for large AOIs)
+PRINT_STATS = False  # min/max check (slow for large AOIs)
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Block until every export task finishes so its batch
@@ -173,6 +177,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -399,6 +407,7 @@ if EXPORT_TARGET == "reference_grid":
             folder=DRIVE_FOLDER,
             file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
             agg_max_pixels=AGG_MAX_PIXELS,
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         )
     )

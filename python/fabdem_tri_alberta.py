@@ -77,17 +77,21 @@ TASK_PREFIX = "FABDEM_TRI_Alberta"
 FILE_PREFIX = "fabdem_tri_alberta"
 
 # Resolution TRI is computed at before aggregating to 1 km.
-BASE_SCALE_M = 50
+BASE_SCALE_M = 40
 TRI_WINDOW_RADIUS = 1  # pixels; 1 = classic 3x3 Riley window
 
 FOCAL_REACH_M = BASE_SCALE_M * TRI_WINDOW_RADIUS
+
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 0
 
 # "native" skips the aggregation and writes BASE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
@@ -99,6 +103,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -182,7 +190,11 @@ else:
 # computation to measure EECU usage; this also runs when
 # COMPUTE_REPORT is on.
 if PRINT_STATS or COMPUTE_REPORT:
-    with report.section(f"{BAND_NAME} min/max (reduceRegion)"):
+    stats = None
+    with report.section(
+        f"{BAND_NAME} min/max (reduceRegion)",
+        raise_on_error=False,
+    ):
         stats = layer.reduceRegion(
             reducer=ee.Reducer.minMax(),
             geometry=aoi,
@@ -209,6 +221,7 @@ if EXPORT_TARGET == "reference_grid":
             folder=DRIVE_FOLDER,
             file_name_prefix=f"{FILE_PREFIX}_{target_suffix}",
             aggregate=False,
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         )
     )

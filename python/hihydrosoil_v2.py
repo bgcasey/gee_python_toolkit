@@ -55,6 +55,7 @@ from utils.compute_report import ComputeReport
 from utils.gee_utils import (
     define_study_area,
     export_to_reference_grid,
+    fill_gaps_nearest,
     initialize_ee,
     to_reference_grid,
 )
@@ -70,6 +71,10 @@ BASE_SCALE_M = 250
 
 # Each value is read as a stored pixel, so no neighbourhood.
 FOCAL_REACH_M = 0
+
+# Reach of the nearest-neighbour gap fill applied after
+# aggregation, in 1 km cells; 0 disables it.
+FILL_GAPS_PX = 20
 
 # Raster export target, applied to both stacks. "native" writes
 # the ~250 m images in EPSG:3400; "reference_grid" aggregates
@@ -156,7 +161,7 @@ EXTRACT_SCALE = BASE_SCALE_M  # 250 m (COARSE_SCALE for 1 km)
 TILE_SCALE = 16  # higher -> more tiles, lower per-tile mem
 N_BATCHES = 50  # Match the number of batches assigned in R
 
-PRINT_STATS = True  # min/max check (slow for large AOIs)
+PRINT_STATS = False  # min/max check (slow for large AOIs)
 USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Block until every export task finishes so its batch
@@ -175,6 +180,10 @@ if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+if FILL_GAPS_PX < 0:
+    raise ValueError(
+        f"FILL_GAPS_PX must be >= 0, got {FILL_GAPS_PX!r}"
     )
 
 # 1.3 Initialize Earth Engine ----
@@ -583,21 +592,31 @@ if COMBINE_OUTPUTS:
     else:
         # Reduce each group with its own reducer, then stack;
         # both are on the grid already, hence aggregate=False.
+        # The gap fill runs per group for the same reason: a
+        # mean fill would blend the categorical class codes.
         parts = []
         if has_continuous:
             parts.append(
-                to_reference_grid(
-                    on_native_base(hihydro_continuous_ab),
-                    aoi,
-                    ee.Reducer.mean(),
+                fill_gaps_nearest(
+                    to_reference_grid(
+                        on_native_base(hihydro_continuous_ab),
+                        aoi,
+                        ee.Reducer.mean(),
+                    ),
+                    max_px=FILL_GAPS_PX,
+                    reducer=ee.Reducer.mean(),
                 )
             )
         if has_categorical:
             parts.append(
-                to_reference_grid(
-                    on_native_base(hihydro_categorical_ab),
-                    aoi,
-                    ee.Reducer.mode(),
+                fill_gaps_nearest(
+                    to_reference_grid(
+                        on_native_base(hihydro_categorical_ab),
+                        aoi,
+                        ee.Reducer.mode(),
+                    ),
+                    max_px=FILL_GAPS_PX,
+                    reducer=ee.Reducer.mode(),
                 )
             )
         combined_1km = parts[0]
@@ -639,6 +658,7 @@ else:
             file_name_prefix="hihydrosoil_continuous_ab_abmi1km",
             aggregate=True,
             reducer=ee.Reducer.mean(),
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         ))
     if has_categorical:
@@ -650,6 +670,7 @@ else:
             file_name_prefix="hihydrosoil_categorical_ab_abmi1km",
             aggregate=True,
             reducer=ee.Reducer.mode(),
+            fill_gaps_px=FILL_GAPS_PX,
             wait=False,
         ))
 
