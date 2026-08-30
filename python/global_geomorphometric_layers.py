@@ -106,7 +106,7 @@ FILL_GAPS_PX = 20
 # the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
