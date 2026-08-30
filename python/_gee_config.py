@@ -21,7 +21,7 @@ EE_PROJECT = "ee-bgcasey-abmi"
 DRIVE_FOLDER = "gee_exports"
 
 # --- ABMI 1 km reference grid --------------------------------
-# Align every export to this grid so all rasters share the same
+# Align exports to this grid so all rasters share the same
 # CRS, cell size, and origin and stack without resampling. Used
 # by the reference-grid helpers in utils/gee_utils.py.
 GRID_CRS = "EPSG:3400"  # NAD83 / Alberta 10-TM (Forest)
@@ -39,6 +39,11 @@ GRID_CRS_TRANSFORM = [1000, 0, 170616.1822, 0, -1000, 6659532.4311]
 PROVINCIAL_BOUNDARY_ASSET = (
     "projects/ee-bgcasey-abmi/assets/AB2020_provincial_boundary"
 )
+
+# ABMI 1 km reference grid (Earth Engine image asset): the
+# canonical cell list, 1 over the grid's 664,762 Alberta cells
+# and masked elsewhere.
+GRID_ASSET = "projects/ee-bgcasey-abmi/assets/abmi_grid_1km"
 
 # Small test AOI (lon/lat ring) for cheap test runs.
 TEST_AOI_COORDS = [
