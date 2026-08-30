@@ -104,7 +104,7 @@ SOURCE_ASSET = "projects/sat-io/open-datasets/FABDEM"
 # scripts. None takes the source's native scale, floored at
 # MIN_BASE_SCALE_M. See "Sizing" in the header.
 BASE_SCALE_M = None
-MIN_BASE_SCALE_M = 50
+MIN_BASE_SCALE_M = 0
 
 # [EDIT] Largest neighbourhood reach in metres; 0 when the
 # layer needs no neighbours. A 3x3 kernel reaches one base
