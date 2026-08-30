@@ -4,8 +4,11 @@
 # created: 2026-08-27
 # inputs:
 #   - [EDIT] Source dataset (Earth Engine image or collection)
+#   - ABMI 1 km reference grid (Earth Engine asset;
+#     _gee_config.GRID_ASSET) the export is masked to
 #   - AB2020 provincial boundary (Earth Engine asset;
-#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the crop
+#     _gee_config.PROVINCIAL_BOUNDARY_ASSET) for the compute
+#     ring and the export region
 # outputs:
 #   - [EDIT] <layer> GeoTIFF for Alberta, either aggregated to
 #     the ABMI 1 km reference grid or written at BASE_SCALE_M,
@@ -18,9 +21,9 @@
 #   README.md.
 #
 #   The source is read over a compute ring (aoi buffered by
-#   COMPUTE_BUFFER_M) and the result clipped back to aoi, so
-#   boundary pixels are built on a full neighbourhood without
-#   widening the exported footprint.
+#   COMPUTE_BUFFER_M) and the result masked back to the ABMI
+#   1 km reference grid, so boundary pixels are built on a full
+#   neighbourhood without widening the exported footprint.
 #
 #   Key details:
 #
@@ -30,8 +33,13 @@
 #     survive it exactly.
 #   - A 1 km cell is NA only where every base pixel under it
 #     is: reduceResolution gives masked pixels zero weight.
-#     FILL_GAPS_PX interpolates those cells.
-#   - A 30 m base fails a full-province run with
+#     FILL_GAPS_PX interpolates those cells. It is for gaps in
+#     the source (cloud-masked composites, land cover no-data),
+#     not for province-edge cells -- those are covered by
+#     masking to the reference grid instead of clipping to the
+#     boundary, whose fractional coverage mask drops a cell
+#     that only clips the province edge.
+#   - A <30 m base can fail a full-province run with
 #     "Reprojection output too large": filling one 1 km output
 #     tile forces the base compute over ~256 km, about 8600 px
 #     at 30 m, past Earth Engine's ~8192 px per-tile cap.
@@ -108,14 +116,14 @@ IS_CATEGORICAL = False
 
 # [EDIT] Reach of the nearest-neighbour gap fill applied after
 # aggregation, in 1 km cells; 0 disables it.
-FILL_GAPS_PX = 0
+FILL_GAPS_PX = 20
 
 # "native" skips the aggregation and writes BASE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
 PRINT_STATS = True  # value preview (slow for large AOIs)
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
