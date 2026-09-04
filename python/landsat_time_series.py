@@ -11,9 +11,9 @@
 #   - One annual multiband spectral-index GeoTIFF per date,
 #     either aggregated to the ABMI 1 km reference grid or at
 #     NATIVE_SCALE_M, selected by EXPORT_TARGET
-#   - Focal (neighbourhood) GeoTIFFs at 0/150/250 m in
-#     FOCAL_CRS, exported alongside and not affected by
-#     EXPORT_TARGET
+#   - Focal (neighbourhood) GeoTIFFs at 0/150/250 m when
+#     RUN_FOCAL is True, written to the same target as the
+#     time series (EXPORT_TARGET)
 #   - Per-band min/max summary CSV (image_stats)
 # notes:
 #   Builds an annual date list, computes the selected spectral
@@ -23,6 +23,13 @@
 #   BASE_SCALE_M is the base each year is pinned to before
 #   aggregating, keeping the 30 m -> 1 km jump under Earth
 #   Engine's per-tile reprojection limit.
+#
+#   NDRS, enabled by RUN_NDRS, is normalized against the
+#   forest pixels of each annual composite (CA_FOREST_LC_VLCE2
+#   land cover, capped at 2019), so it costs one aoi-wide
+#   min/max per band per year. LS_NDRS_FOREST_TYPES gives one
+#   band per forest class group (NDRS_coni, NDRS_deci,
+#   NDRS_mixed).
 #
 #   Deviation: the shared ls_fn helper expects a client-side
 #   list of date strings, so the ee.List produced by
@@ -59,15 +66,15 @@ from utils.gee_utils import (
     export_collection_to_reference_grid,
     initialize_ee,
 )
-from utils.landsat_time_series import ls_fn
+from utils.landsat_time_series import AVAILABLE_INDICES, ls_fn
 
 # 1. Setup ----
 
 # 1.1 User parameters ----
 FILE_PREFIX = "landsat_multiband"
 
-LS_START_DATE = "2000-06-01"  # first time-series date
-LS_END_DATE = "2024-06-01"  # last time-series date
+LS_START_DATE = "2024-06-01"  # first time-series date
+LS_END_DATE = "2025-06-01"  # last time-series date
 LS_DATE_INTERVAL = 1  # step between series start dates
 LS_DATE_INTERVAL_TYPE = "years"  # units for the step
 LS_WINDOW = 121  # compositing window length
@@ -79,17 +86,25 @@ LS_INDICES = [
     "NDWI", "SAVI", "SI",
 ]
 
+# NDRS bands (section 3), each costing an aoi-wide DRS
+# min/max per year on top of the indices above.
+RUN_NDRS = False  # False: skip the NDRS bands
+# One NDRS band per entry, normalized within those forest
+# classes: 210 coniferous (NDRS_coni), 220 broadleaf
+# (NDRS_deci), 230 mixedwood; any other combination gives
+# NDRS_mixed.
+LS_NDRS_FOREST_TYPES = [[210], [220], [210, 220, 230]]
+
 # Base each year is pinned to before aggregating; see notes.
-BASE_SCALE_M = 50
+BASE_SCALE_M = 30
 NATIVE_SCALE_M = 30  # resolution of the "native" export
 
-# Separate focal product (section 5), not aggregated to the
-# ABMI grid and not affected by EXPORT_TARGET.
-FOCAL_SCALE = 990  # focal export scale (m)
-FOCAL_CRS = "EPSG:3978"  # focal export CRS
+# Separate focal product (section 5), written to the same
+# target as the time series.
+RUN_FOCAL = False  # False: skip the focal exports
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
 
-FOCAL_REACH_M = max(FOCAL_KERNELS)
+FOCAL_REACH_M = max(FOCAL_KERNELS) if RUN_FOCAL else 0
 
 # Reach of the nearest-neighbour gap fill applied after
 # aggregation, in 1 km cells; 0 disables it.
@@ -101,17 +116,31 @@ FILL_GAPS_PX = 20
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
 
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
-PRINT_STATS = True  # value preview (slow for large AOIs)
-COMPUTE_REPORT = True  # write EECU usage report (txt)
+PRINT_STATS = False  # value preview (slow for large AOIs)
+COMPUTE_REPORT = False  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
+
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
 
 # 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
         "Unknown EXPORT_TARGET: "
         f"{EXPORT_TARGET!r} (use 'native' or 'reference_grid')"
+    )
+unknown_indices = [
+    index
+    for index in LS_INDICES
+    if index not in AVAILABLE_INDICES
+]
+if unknown_indices:
+    raise ValueError(
+        f"Unknown LS_INDICES: {unknown_indices}; "
+        f"available: {list(AVAILABLE_INDICES)}"
     )
 if FILL_GAPS_PX < 0:
     raise ValueError(
@@ -171,8 +200,9 @@ ls = ls_fn(
     LS_WINDOW,
     LS_WINDOW_TYPE,
     aoi_compute,
-    LS_INDICES,
+    LS_INDICES + (["NDRS"] if RUN_NDRS else []),
     LS_STATISTIC,
+    ndrs_forest_types=LS_NDRS_FOREST_TYPES,
 )
 
 
@@ -201,14 +231,16 @@ if PRINT_STATS or COMPUTE_REPORT:
     with report.section("Landsat band min/max stats"):
         stats = collection_stats.first().toDictionary().getInfo()
     print("Landsat first-image stats:", stats)
-    export_stats_to_csv(collection_stats, "image_stats")
+    export_stats_to_csv(
+    collection_stats, f"image_stats{TEST_SUFFIX}"
+)
 
 # 4. Export the time series ----
 # One export task per image. Monitor progress at
 # https://code.earthengine.google.com/tasks
 target_suffix = (
     "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
-)
+) + TEST_SUFFIX
 
 
 def landsat_file_name(img):
@@ -217,74 +249,71 @@ def landsat_file_name(img):
     return f"{FILE_PREFIX}_{year}_{target_suffix}"
 
 
-if EXPORT_TARGET == "reference_grid":
-    export_tasks += export_collection_to_reference_grid(
-        ls,
-        aoi,
-        landsat_file_name,
-        folder=DRIVE_FOLDER,
-        reducer=ee.Reducer.mean(),
-        agg_base_m=BASE_SCALE_M,
-        agg_max_pixels=AGG_MAX_PIXELS,
-        fill_gaps_px=FILL_GAPS_PX,
-    )
-else:
-    export_tasks += export_image_collection(
-        ls,
+def export_to_target(collection, file_name_fn):
+    """Export a collection to the EXPORT_TARGET grid."""
+    if EXPORT_TARGET == "reference_grid":
+        return export_collection_to_reference_grid(
+            collection,
+            aoi,
+            file_name_fn,
+            folder=DRIVE_FOLDER,
+            reducer=ee.Reducer.mean(),
+            agg_base_m=BASE_SCALE_M,
+            agg_max_pixels=AGG_MAX_PIXELS,
+            fill_gaps_px=FILL_GAPS_PX,
+        )
+    return export_image_collection(
+        collection,
         aoi,
         DRIVE_FOLDER,
         NATIVE_SCALE_M,
         GRID_CRS,
-        landsat_file_name,
+        file_name_fn,
     )
+
+
+export_tasks += export_to_target(ls, landsat_file_name)
 
 # 5. Focal analysis ----
-# A separate product: focal (neighbourhood) statistics at
-# 0/150/250 m in FOCAL_CRS. The 0 m case appends a "_0" band
+# An optional separate product, controlled by RUN_FOCAL: focal
+# (neighbourhood) statistics at 0/150/250 m, exported to the
+# same target as section 4. The 0 m case appends a "_0" band
 # suffix but applies no smoothing.
 
+if RUN_FOCAL:
 
-def make_focal_file_name(kernel_size):
-    """Build the file-name function for one focal radius."""
+    def make_focal_file_name(kernel_size):
+        """Build the file-name function for one focal radius."""
 
-    def focal_file_name(img):
-        year = img.get("year").getInfo() or "unknown"
-        return f"{FILE_PREFIX}_{kernel_size}_{year}"
+        def focal_file_name(img):
+            year = img.get("year").getInfo() or "unknown"
+            return (
+                f"{FILE_PREFIX}_{kernel_size}_{year}"
+                f"_{target_suffix}"
+            )
 
-    return focal_file_name
+        return focal_file_name
 
-
-def rename_zero_focal(img):
-    """Append a "_0" suffix to every band name."""
-    new_names = img.bandNames().map(
-        lambda name: ee.String(name).cat("_0")
-    )
-    return img.rename(new_names)
-
-
-export_tasks += export_image_collection(
-    ls.map(rename_zero_focal),
-    aoi,
-    DRIVE_FOLDER,
-    FOCAL_SCALE,
-    FOCAL_CRS,
-    make_focal_file_name(0),
-)
-
-for kernel_size in FOCAL_KERNELS:
-    ls_focal = ls.map(
-        lambda img, k=kernel_size: focal_stats(
-            img, k, "circle", ["year"]
+    def rename_zero_focal(img):
+        """Append a "_0" suffix to every band name."""
+        new_names = img.bandNames().map(
+            lambda name: ee.String(name).cat("_0")
         )
+        return img.rename(new_names)
+
+    export_tasks += export_to_target(
+        ls.map(rename_zero_focal), make_focal_file_name(0)
     )
-    export_tasks += export_image_collection(
-        ls_focal,
-        aoi,
-        DRIVE_FOLDER,
-        FOCAL_SCALE,
-        FOCAL_CRS,
-        make_focal_file_name(kernel_size),
-    )
+
+    for kernel_size in FOCAL_KERNELS:
+        ls_focal = ls.map(
+            lambda img, k=kernel_size: focal_stats(
+                img, k, "circle", ["year"]
+            )
+        )
+        export_tasks += export_to_target(
+            ls_focal, make_focal_file_name(kernel_size)
+        )
 
 # 6. Compute usage report ----
 # Records each task's total EECU-seconds and writes the txt

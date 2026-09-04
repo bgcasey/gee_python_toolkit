@@ -57,6 +57,10 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # test AOI.
 WAIT_FOR_EXPORTS = False
 
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
+
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
@@ -127,10 +131,10 @@ if PRINT_STATS or COMPUTE_REPORT:
 export_tasks.append(
     export_image_to_drive(
         image=layer,
-        description=TASK_PREFIX,
+        description=f"{TASK_PREFIX}{TEST_SUFFIX}",
         region=aoi_geom,
         folder=DRIVE_FOLDER,
-        file_name_prefix=FILE_PREFIX,
+        file_name_prefix=f"{FILE_PREFIX}{TEST_SUFFIX}",
         scale=BASE_SCALE_M,
         crs=EXPORT_CRS,
         max_pixels=1e13,

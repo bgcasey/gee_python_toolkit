@@ -171,6 +171,10 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # test AOI.
 WAIT_FOR_EXPORTS = False
 
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
+
 # Export tasks started below, for the optional per-task EECU
 # logging in the compute-report section at the end.
 export_tasks = []
@@ -502,9 +506,17 @@ if EXTRACT_XY_POINTS and hihydro_combined is not None:
         batch_str = str(b).zfill(2)
         task = ee.batch.Export.table.toDrive(
             collection=extracted,
-            description="hihydrosoil_xy_batch" + batch_str,
+            description=(
+                "hihydrosoil_xy_batch"
+                + batch_str
+                + TEST_SUFFIX
+            ),
             folder=DRIVE_FOLDER,
-            fileNamePrefix="hihydrosoil_xy_batch" + batch_str,
+            fileNamePrefix=(
+                "hihydrosoil_xy_batch"
+                + batch_str
+                + TEST_SUFFIX
+            ),
             fileFormat="CSV",
         )
         task.start()
@@ -625,9 +637,11 @@ if COMBINE_OUTPUTS:
         export_tasks.append(export_to_reference_grid(
             image=combined_1km,
             aoi=aoi,
-            description="HiHydroSoil_AB_abmi1km",
+            description=f"HiHydroSoil_AB_abmi1km{TEST_SUFFIX}",
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_ab_abmi1km",
+            file_name_prefix=(
+                f"hihydrosoil_ab_abmi1km{TEST_SUFFIX}"
+            ),
             aggregate=False,
             wait=False,
         ))
@@ -637,14 +651,14 @@ elif EXPORT_TARGET == "native":
     if has_continuous:
         export_native(
             hihydro_continuous_ab,
-            "HiHydroSoil_Continuous_AB_native",
-            "hihydrosoil_continuous_ab_native",
+            f"HiHydroSoil_Continuous_AB_native{TEST_SUFFIX}",
+            f"hihydrosoil_continuous_ab_native{TEST_SUFFIX}",
         )
     if has_categorical:
         export_native(
             hihydro_categorical_ab,
-            "HiHydroSoil_Categorical_AB_native",
-            "hihydrosoil_categorical_ab_native",
+            f"HiHydroSoil_Categorical_AB_native{TEST_SUFFIX}",
+            f"hihydrosoil_categorical_ab_native{TEST_SUFFIX}",
         )
 
 else:
@@ -653,9 +667,15 @@ else:
         export_tasks.append(export_to_reference_grid(
             image=on_native_base(hihydro_continuous_ab),
             aoi=aoi,
-            description="HiHydroSoil_Continuous_AB_abmi1km",
+            description=(
+                "HiHydroSoil_Continuous_AB_abmi1km"
+                + TEST_SUFFIX
+            ),
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_continuous_ab_abmi1km",
+            file_name_prefix=(
+                "hihydrosoil_continuous_ab_abmi1km"
+                + TEST_SUFFIX
+            ),
             aggregate=True,
             reducer=ee.Reducer.mean(),
             fill_gaps_px=FILL_GAPS_PX,
@@ -665,9 +685,15 @@ else:
         export_tasks.append(export_to_reference_grid(
             image=on_native_base(hihydro_categorical_ab),
             aoi=aoi,
-            description="HiHydroSoil_Categorical_AB_abmi1km",
+            description=(
+                "HiHydroSoil_Categorical_AB_abmi1km"
+                + TEST_SUFFIX
+            ),
             folder=DRIVE_FOLDER,
-            file_name_prefix="hihydrosoil_categorical_ab_abmi1km",
+            file_name_prefix=(
+                "hihydrosoil_categorical_ab_abmi1km"
+                + TEST_SUFFIX
+            ),
             aggregate=True,
             reducer=ee.Reducer.mode(),
             fill_gaps_px=FILL_GAPS_PX,

@@ -88,6 +88,10 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
 
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
+
 # 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
     raise ValueError(
@@ -163,7 +167,7 @@ if PRINT_STATS or COMPUTE_REPORT:
 # https://code.earthengine.google.com/tasks
 target_suffix = (
     "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
-)
+) + TEST_SUFFIX
 
 
 def land_cover_file_name(img):

@@ -12,8 +12,8 @@
 #     aggregated to the ABMI 1 km reference grid or at
 #     NATIVE_SCALE_M, selected by EXPORT_TARGET
 #   - Focal (neighbourhood) GeoTIFFs at 0/150/250 m in
-#     FOCAL_CRS, exported alongside and not affected by
-#     EXPORT_TARGET
+#     FOCAL_CRS when RUN_FOCAL is True, exported alongside
+#     and not affected by EXPORT_TARGET
 # notes:
 #   Extracts all bands from the MODIS MCD12Q2 phenology
 #   product, applies the EVI band scaling factors, and casts
@@ -64,11 +64,12 @@ NATIVE_SCALE_M = 500  # resolution of the "native" export
 
 # Separate focal product (section 5), not aggregated to the
 # ABMI grid and not affected by EXPORT_TARGET.
-FOCAL_SCALE = 990  # focal export scale (m)
+RUN_FOCAL = False  # False: skip the focal exports
+FOCAL_SCALE = 1000  # focal export scale (m)
 FOCAL_CRS = "EPSG:3978"  # focal export CRS
 FOCAL_KERNELS = [150, 250]  # focal radii (m), circle
 
-FOCAL_REACH_M = max(FOCAL_KERNELS)
+FOCAL_REACH_M = max(FOCAL_KERNELS) if RUN_FOCAL else 0
 
 # Reach of the nearest-neighbour gap fill applied after
 # aggregation, in 1 km cells; 0 disables it.
@@ -85,6 +86,10 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
+
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
 
 # 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
@@ -196,7 +201,7 @@ if PRINT_STATS or COMPUTE_REPORT:
 # https://code.earthengine.google.com/tasks
 target_suffix = (
     "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
-)
+) + TEST_SUFFIX
 
 
 def modis_file_name(img):
@@ -227,52 +232,51 @@ else:
     )
 
 # 5. Focal analysis ----
-# A separate product: focal (neighbourhood) statistics at
-# 0/150/250 m in FOCAL_CRS. The 0 m case appends a "_0" band
-# suffix but applies no smoothing.
+# An optional separate product, controlled by RUN_FOCAL: focal
+# (neighbourhood) statistics at 0/150/250 m in FOCAL_CRS. The
+# 0 m case appends a "_0" band suffix but applies no smoothing.
 
+if RUN_FOCAL:
 
-def make_focal_file_name(kernel_size):
-    """Build the file-name function for one focal radius."""
+    def make_focal_file_name(kernel_size):
+        """Build the file-name function for one focal radius."""
 
-    def focal_file_name(img):
-        year = img.get("year").getInfo() or "unknown"
-        return f"{FILE_PREFIX}_{kernel_size}_{year}"
+        def focal_file_name(img):
+            year = img.get("year").getInfo() or "unknown"
+            return f"{FILE_PREFIX}_{kernel_size}_{year}"
 
-    return focal_file_name
+        return focal_file_name
 
-
-def rename_zero_focal(img):
-    """Append a "_0" suffix to every band name."""
-    new_names = img.bandNames().map(
-        lambda name: ee.String(name).cat("_0")
-    )
-    return img.rename(new_names)
-
-
-export_tasks += export_image_collection(
-    dataset.map(rename_zero_focal),
-    aoi,
-    DRIVE_FOLDER,
-    FOCAL_SCALE,
-    FOCAL_CRS,
-    make_focal_file_name(0),
-)
-
-for kernel_size in FOCAL_KERNELS:
-    modis_focal = dataset.map(
-        lambda img, k=kernel_size: focal_stats(
-            img, k, "circle", ["year"]
+    def rename_zero_focal(img):
+        """Append a "_0" suffix to every band name."""
+        new_names = img.bandNames().map(
+            lambda name: ee.String(name).cat("_0")
         )
-    )
+        return img.rename(new_names)
+
     export_tasks += export_image_collection(
-        modis_focal,
+        dataset.map(rename_zero_focal),
         aoi,
         DRIVE_FOLDER,
         FOCAL_SCALE,
         FOCAL_CRS,
-        make_focal_file_name(kernel_size),
+        make_focal_file_name(0),
     )
+
+    for kernel_size in FOCAL_KERNELS:
+        modis_focal = dataset.map(
+            lambda img, k=kernel_size: focal_stats(
+                img, k, "circle", ["year"]
+            )
+        )
+        export_tasks += export_image_collection(
+            modis_focal,
+            aoi,
+            DRIVE_FOLDER,
+            FOCAL_SCALE,
+            FOCAL_CRS,
+            make_focal_file_name(kernel_size),
+        )
 
 # 6. Compute usage report ----
 # Records each task's total EECU-seconds and writes the txt

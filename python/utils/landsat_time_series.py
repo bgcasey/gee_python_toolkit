@@ -18,6 +18,12 @@
 #      prioritizing 5, 8, and 9 over 7.
 #   3. Composite selected vegetation indices and merge them
 #      into a single image collection.
+#
+#   Most indices are per-scene and are added before the
+#   compositing reduction. NDRS is the exception: it
+#   normalizes DRS across forest pixels, so it needs the
+#   composite's year property and a single aoi-wide min/max,
+#   and is applied after the reduction (see ls_fn).
 # ---
 
 import ee
@@ -40,6 +46,15 @@ INDEX_FUNCTIONS = {
     "SAVI": li.add_savi,
     "SI": li.add_si,
 }
+
+# Indices added to the composite instead of each scene; see
+# the notes above.
+POST_COMPOSITE_INDICES = ("NDRS",)
+
+# Every index name accepted by ls_fn.
+AVAILABLE_INDICES = tuple(
+    sorted(set(INDEX_FUNCTIONS) | set(POST_COMPOSITE_INDICES))
+)
 
 
 def harmonize_oli_to_etm(image):
@@ -222,6 +237,7 @@ def ls_fn(
     aoi,
     selected_indices,
     statistic,
+    ndrs_forest_types=None,
 ):
     """Process Landsat images and merge them into a series.
 
@@ -237,15 +253,51 @@ def ls_fn(
     aoi : ee.Geometry
         Area of interest.
     selected_indices : list of str
-        Indices to calculate (e.g., ['NDVI']).
+        Indices to calculate (e.g., ['NDVI']). Names must
+        come from AVAILABLE_INDICES.
     statistic : str
         Statistic to apply ('mean', 'median', 'max', etc.).
+    ndrs_forest_types : list of list of int, optional
+        One NDRS band per entry, each a list of forest class
+        codes to normalize within (210 coniferous,
+        220 broadleaf, 230 mixedwood); None as an entry uses
+        all three. Defaults to a single all-forest band.
+        Ignored unless 'NDRS' is in selected_indices.
 
     Returns
     -------
     ee.ImageCollection
-        Processed images clipped to the AOI.
+        Processed images clipped to the AOI. Requesting
+        'NDRS' yields one band per ndrs_forest_types entry,
+        suffixed by forest class (e.g. 'NDRS_coni').
+
+    Raises
+    ------
+    ValueError
+        If two ndrs_forest_types entries map to the same
+        band name.
     """
+    # NDRS is added to the composite, and normalizes a DRS
+    # band, so DRS is computed per scene either way.
+    add_ndrs_bands = "NDRS" in selected_indices
+    scene_indices = [
+        index
+        for index in selected_indices
+        if index not in POST_COMPOSITE_INDICES
+    ]
+    if add_ndrs_bands and "DRS" not in scene_indices:
+        scene_indices.append("DRS")
+
+    ndrs_groups = ndrs_forest_types or [None]
+    if add_ndrs_bands:
+        suffixes = [
+            li.ndrs_suffix(group) for group in ndrs_groups
+        ]
+        if len(set(suffixes)) != len(suffixes):
+            raise ValueError(
+                "ndrs_forest_types entries give duplicate "
+                f"band names: {sorted(suffixes)}"
+            )
 
     def ls_ts(d1):
         """Process images for a single date.
@@ -271,7 +323,7 @@ def ls_fn(
         )
 
         # Apply selected indices to the collection.
-        for index in selected_indices:
+        for index in scene_indices:
             fn = INDEX_FUNCTIONS.get(index)
             if fn is not None:
                 combined_collection = combined_collection.map(
@@ -307,7 +359,7 @@ def ls_fn(
         )
 
         # Set metadata for the reduced image.
-        return combined_image.set(
+        composite = combined_image.set(
             {
                 "start_date": start.format("YYYY-MM-dd"),
                 "end_date": end.format("YYYY-MM-dd"),
@@ -315,6 +367,23 @@ def ls_fn(
                 "year": start.get("year"),
             }
         )
+
+        # add_ndrs reads the year property and reduces over
+        # the image geometry, so it takes the clipped
+        # composite; DRS is dropped again when it was only
+        # added to support NDRS.
+        if add_ndrs_bands:
+            composite = composite.clip(aoi)
+            for group in ndrs_groups:
+                composite = li.add_ndrs(composite, group)
+            if "DRS" not in selected_indices:
+                composite = composite.select(
+                    composite.bandNames().filter(
+                        ee.Filter.neq("item", "DRS")
+                    )
+                )
+
+        return composite
 
     # Map over dates, clip to AOI, and return a collection.
     ls = ee.ImageCollection.fromImages(

@@ -89,8 +89,9 @@ from utils.gee_utils import (
 # 1. Setup ----
 
 # 1.1 User parameters ----
-# [EDIT] Output names. target_suffix ("abmi1km" or "native")
-# is appended to TASK_PREFIX and FILE_PREFIX at export.
+# [EDIT] Output names. target_suffix ("abmi1km" or "native",
+# plus "_test" on a test-AOI run) is appended to TASK_PREFIX
+# and FILE_PREFIX at export.
 BAND_NAME = "template_layer"
 TASK_PREFIX = "Template_Layer_Alberta"
 FILE_PREFIX = "template_layer_alberta"
@@ -129,6 +130,10 @@ COMPUTE_REPORT = True  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
+
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
 
 # 1.2 Validate parameters ----
 if EXPORT_TARGET not in ("native", "reference_grid"):
@@ -241,7 +246,7 @@ if PRINT_STATS or COMPUTE_REPORT:
 # https://code.earthengine.google.com/tasks
 target_suffix = (
     "abmi1km" if EXPORT_TARGET == "reference_grid" else "native"
-)
+) + TEST_SUFFIX
 
 if EXPORT_TARGET == "reference_grid":
     export_tasks.append(

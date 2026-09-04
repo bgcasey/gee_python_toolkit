@@ -325,6 +325,36 @@ def add_ndwi(image):
     return image.addBands([ndwi])
 
 
+def ndrs_suffix(forest_types=None):
+    """Band-name suffix NDRS gets for a set of forest types.
+
+    Parameters
+    ----------
+    forest_types : list of int, optional
+        Forest class codes (210 coniferous, 220 broadleaf,
+        230 mixedwood). Defaults to all three.
+
+    Returns
+    -------
+    str
+        '_coni', '_deci', or '_mixed'.
+
+    Examples
+    --------
+    >>> ndrs_suffix([210])
+    '_coni'
+    >>> ndrs_suffix()
+    '_mixed'
+    """
+    if forest_types is None or len(forest_types) != 1:
+        return "_mixed"
+    if forest_types[0] == 210:
+        return "_coni"
+    if forest_types[0] == 220:
+        return "_deci"
+    return "_mixed"
+
+
 def add_ndrs(image, forest_types=None):
     """Add a Normalized Distance Red & SWIR (NDRS) band.
 
@@ -415,31 +445,8 @@ def add_ndrs(image, forest_types=None):
         },
     ).rename("NDRS")
 
-    # Determine the band-name suffix.
-    if len(forest_types) == 1:
-        if forest_types[0] == 210:
-            suffix = "_coni"
-        elif forest_types[0] == 220:
-            suffix = "_deci"
-        else:
-            suffix = "_mixed"
-    else:
-        suffix = "_mixed"
-
-    # Append the suffix to the NDRS band name.
-    ndrs = ndrs.rename(
-        ndrs.bandNames().map(
-            lambda band_name: ee.String(band_name).cat(suffix)
-        )
-    )
-
-    # Collapse combined suffixes to '_mixed'.
-    renamed_bands = ndrs.bandNames().map(
-        lambda band_name: ee.String(band_name).replace(
-            "NDRS_coni_deci_mixed", "NDRS_mixed"
-        )
-    )
-    ndrs = ndrs.rename(renamed_bands)
+    # Append the forest-class suffix to the band name.
+    ndrs = ndrs.rename("NDRS" + ndrs_suffix(forest_types))
 
     return image.addBands(ndrs)
 

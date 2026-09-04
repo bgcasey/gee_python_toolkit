@@ -74,6 +74,10 @@ PRINT_STATS = True  # value preview (slow for large AOIs)
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 COMPUTE_REPORT = True  # write EECU usage report (txt)
 
+# Derived: keeps test-AOI tasks and files
+# distinguishable from full-extent runs.
+TEST_SUFFIX = "_test" if USE_TEST_AOI else ""
+
 # 1.2 Initialize Earth Engine ----
 # Project ID is read from _gee_config.py
 initialize_ee()
@@ -185,7 +189,7 @@ ls_poly_summary = image_collection_to_features(
     SUMMARY_CRS,
     SUMMARY_SCALE,
     SUMMARY_TILE_SCALE,
-    SUMMARY_FILE_NAME,
+    f"{SUMMARY_FILE_NAME}{TEST_SUFFIX}",
 )
 
 # 5. Compute usage report ----
