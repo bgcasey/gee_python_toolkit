@@ -113,7 +113,7 @@ FILL_GAPS_PX = 20
 # "native" skips the aggregation and writes NATIVE_SCALE_M
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
-EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
+EXPORT_TARGET = "native"  # "native" or "reference_grid"
 
 USE_TEST_AOI = True  # True: small test AOI; False: Alberta
 PRINT_STATS = False  # value preview (slow for large AOIs)
