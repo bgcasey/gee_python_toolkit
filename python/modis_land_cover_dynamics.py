@@ -19,6 +19,16 @@
 #   product, applies the EVI band scaling factors, and casts
 #   to Float32.
 #
+#   Every band uses 32767 as its fill value. With 
+#   MASK_FILL_VALUES True those pixels are
+#   masked before any scaling or rebasing, so fill is never
+#   averaged into a coarser cell.
+#
+#   The phenology date bands are stored as days since
+#   1970-01-01. With CONVERT_DATES_TO_DOY True they are
+#   rebased to days since January 1 of the image's phenology
+#   year, so exported values are ordinal days.
+#
 #   NATIVE_SCALE_M is MCD12Q2's nominal 500 m; native_scale
 #   reports 463.31 for the underlying sinusoidal grid if you
 #   prefer it exact.
@@ -61,6 +71,14 @@ MODIS_END_DATE = "2024-12-31"  # phenology year end
 # native resolution.
 BASE_SCALE_M = 500
 NATIVE_SCALE_M = 500  # resolution of the "native" export
+
+# True: mask the product fill value before scaling and
+# rebasing, so it is never read as data.
+MASK_FILL_VALUES = True
+
+# True: rebase the date bands from days since 1970-01-01 to
+# days since January 1 of the image's phenology year.
+CONVERT_DATES_TO_DOY = True
 
 # Separate focal product (section 5), not aggregated to the
 # ABMI grid and not affected by EXPORT_TARGET.
@@ -146,6 +164,20 @@ def add_year_and_clip(image):
     return image.set("year", year).clip(aoi_compute)
 
 
+# Fill value shared by every MCD12Q2 band (C6.1 user guide,
+# Table 1).
+FILL_VALUE = 32767
+
+
+def mask_fill(image):
+    """Mask the fill value in every band."""
+    return ee.Image(
+        image.updateMask(image.neq(FILL_VALUE)).copyProperties(
+            image, image.propertyNames()
+        )
+    )
+
+
 def apply_scaling(image):
     """Rescale the EVI phenology bands to physical units."""
     scale_by = {
@@ -169,13 +201,56 @@ def apply_scaling(image):
     )
 
 
+# Bands holding a phenological transition date, stored as
+# days since 1970-01-01.
+DATE_BANDS = [
+    "Greenup_1",
+    "Greenup_2",
+    "MidGreenup_1",
+    "MidGreenup_2",
+    "Peak_1",
+    "Peak_2",
+    "Maturity_1",
+    "Maturity_2",
+    "Senescence_1",
+    "Senescence_2",
+    "MidGreendown_1",
+    "MidGreendown_2",
+    "Dormancy_1",
+    "Dormancy_2",
+]
+
+
+def dates_to_day_of_year(image):
+    """Rebase the date bands to the image's phenology year."""
+    year_start = ee.Date.fromYMD(image.date().get("year"), 1, 1)
+    offset = year_start.difference(ee.Date("1970-01-01"), "day")
+    date_bands = image.bandNames().filter(
+        ee.Filter.inList("item", DATE_BANDS)
+    )
+    rebased = image.select(date_bands).subtract(offset)
+    return ee.Image(
+        image.addBands(rebased, None, True).copyProperties(
+            image, image.propertyNames()
+        )
+    )
+
+
 dataset = (
     ee.ImageCollection(SOURCE_ASSET)
     .filter(ee.Filter.date(MODIS_START_DATE, MODIS_END_DATE))
     .map(add_year_and_clip)
-    .map(apply_scaling)
-    .map(lambda img: img.toFloat())
 )
+
+if MASK_FILL_VALUES:
+    dataset = dataset.map(mask_fill)
+
+dataset = dataset.map(apply_scaling)
+
+if CONVERT_DATES_TO_DOY:
+    dataset = dataset.map(dates_to_day_of_year)
+
+dataset = dataset.map(lambda img: img.toFloat())
 
 # 3.1 Check layer values (optional) ----
 # Earth Engine is lazy, so the profiler needs an evaluated
