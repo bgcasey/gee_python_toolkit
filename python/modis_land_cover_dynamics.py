@@ -64,7 +64,7 @@ from utils.gee_utils import (
 FILE_PREFIX = "MODIS_MCD12Q2"
 
 SOURCE_ASSET = "MODIS/061/MCD12Q2"
-MODIS_START_DATE = "2024-01-01"  # phenology year start
+MODIS_START_DATE = "2001-01-01"  # phenology year start
 MODIS_END_DATE = "2024-12-31"  # phenology year end
 
 # MCD12Q2 is already coarse, so the aggregation base is its
@@ -97,10 +97,10 @@ FILL_GAPS_PX = 20
 # pixels in the grid CRS, ungridded - useful for inspecting
 # the input to the aggregation.
 EXPORT_TARGET = "reference_grid"  # "native" or "reference_grid"
-
-USE_TEST_AOI = True  # True: small test AOI; False: Alberta
-PRINT_STATS = True  # value preview (slow for large AOIs)
-COMPUTE_REPORT = True  # write EECU usage report (txt)
+    
+USE_TEST_AOI = False  # True: small test AOI; False: Alberta
+PRINT_STATS = False  # value preview (slow for large AOIs)
+COMPUTE_REPORT = False  # write EECU usage report (txt)
 # Costs the full export runtime (hours province-wide), so
 # turn it on only when profiling the test AOI.
 WAIT_FOR_EXPORTS = False
